@@ -1,0 +1,3 @@
+[submodule "AgentGameFakeAppApi"]
+	path = AgentGameFakeAppApi
+	url = https://github.com/zxx-sqq/AgentGameFakeAppApi.git
