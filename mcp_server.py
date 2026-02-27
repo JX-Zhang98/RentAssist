@@ -5,12 +5,17 @@
 
 import os
 import json
+from pathlib import Path
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-# 配置
-API_BASE_URL = os.environ.get("RENT_API_BASE_URL", "http://localhost:8080")
-DEFAULT_USER_ID = os.environ.get("RENT_USER_ID", "")
+# 从 config.json 读取配置
+_config_path = Path(__file__).parent / "config.json"
+with open(_config_path, "r", encoding="utf-8") as f:
+    _config = json.load(f)
+
+API_BASE_URL = _config.get("apiaddr", "http://localhost:8080")
+DEFAULT_USER_ID = _config.get("userid", "")
 
 mcp = FastMCP("RentAssist", instructions="北京租房仿真 API 工具集")
 
@@ -94,16 +99,6 @@ async def get_landmark_stats() -> str:
 
 
 # ==================== 房源接口 ====================
-
-@mcp.tool()
-async def init_houses(user_id: str | None = None) -> str:
-    """重置房源数据到初始状态。建议每个新 session 开始时调用，避免数据状态冲突。
-
-    Args:
-        user_id: 用户工号，不传则使用环境变量 RENT_USER_ID
-    """
-    return await _post("/api/houses/init", user_id=user_id)
-
 
 @mcp.tool()
 async def get_house_by_id(house_id: str, user_id: str | None = None) -> str:
