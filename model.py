@@ -58,6 +58,10 @@ class ChatModelService:
         addr = model_ip.strip()
         if not addr:
             raise ValueError("model_ip 不能为空")
+        
+        # 处理xx.xx.xx.xx仅IP样式输入
+        if len(addr.split(".")) == 4:
+            addr = f"http://{addr}:8888/v1"
 
         if addr.startswith("http://") or addr.startswith("https://"):
             base = addr.rstrip("/")
