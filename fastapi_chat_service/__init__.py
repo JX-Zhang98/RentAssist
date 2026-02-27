@@ -1,1 +1,0 @@
-# FastAPI chat service package.

@@ -1,13 +1,12 @@
-from __future__ import annotations
-
 import json
 import re
 import time
+import uvicorn  
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
-from typing import Annotated, Literal
-
+from typing import Literal, Union, List
+from typing_extensions import Annotated
 from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -33,9 +32,9 @@ class ChatResponse(BaseModel):
 
     session_id: str = Field(min_length=1)
     response: str = Field(min_length=1)
-    houses: list[str]
-    status: Literal["success"]
-    tool_results: list[ToolResult]
+    houses: List[str]
+    status: Literal["success", "failure"]
+    tool_results: List[ToolResult]
     timestamp: int
     duration_ms: int
 
@@ -56,7 +55,7 @@ class ResponseLogEvent(BaseModel):
     payload: ChatResponse
 
 
-LogEvent = Annotated[RequestLogEvent | ResponseLogEvent, Field(discriminator="event_type")]
+LogEvent = Annotated[Union[RequestLogEvent , ResponseLogEvent], Field(discriminator="event_type")]
 
 
 class SessionLog(BaseModel):
@@ -64,7 +63,7 @@ class SessionLog(BaseModel):
 
     session_id: str = Field(min_length=1)
     created_at: int
-    events: list[LogEvent] = Field(default_factory=list)
+    events: List[LogEvent] = Field(default_factory=list)
 
 
 class SessionFileLogger:
@@ -130,7 +129,7 @@ def _safe_session_id(raw_session_id: str) -> str:
     return safe or "session"
 
 
-def _pick_houses(message: str) -> list[str]:
+def _pick_houses(message: str) -> List[str]:
     if "海淀" in message:
         return ["HF_4", "HF_6", "HF_277"]
     if "朝阳" in message:
@@ -168,12 +167,6 @@ async def chat(req: ChatRequest) -> ChatResponse:
     return response
 
 
-@app.get("/healthz")
-async def healthz() -> dict[str, str]:
-    return {"status": "ok"}
-
 
 if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run("fastapi_chat_service.app:app", host="0.0.0.0", port=8191, reload=False)
+    uvicorn.run(app="main:app", host="0.0.0.0", port=8080, reload=False)
