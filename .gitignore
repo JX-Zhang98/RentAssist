@@ -7,3 +7,6 @@ log/
 data/
 secrets
 test*
+
+.claude
+.codex
