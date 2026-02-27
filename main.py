@@ -5,25 +5,18 @@
 import time
 import uvicorn  
 from pathlib import Path
-from typing import  List
 from fastapi import FastAPI
 
 
 from typedef import *
 from logger import SessionFileLogger
+from model import ChatModelService
 
 
 
 app = FastAPI(title="Chat Service", version="1.0.0")
 session_logger = SessionFileLogger(Path("log"))
-
-# 模拟查询房源，后续使用agent响应替代
-def _pick_houses(message: str) -> List[str]:
-    if "海淀" in message:
-        return ["HF_4", "HF_6", "HF_277"]
-    if "朝阳" in message:
-        return ["CY_11", "CY_25"]
-    return ["HF_4"]
+model_service = ChatModelService()
 
 
 @app.post("/api/v1/chat", response_model=ChatResponse)
@@ -31,17 +24,30 @@ async def chat(req: ChatRequest) -> ChatResponse:
     start = time.perf_counter()
     session_logger.log_request(req)
 
-    houses = _pick_houses(req.message)
+    try:
+        model_result = model_service.chat(model_ip=req.model_ip, message=req.message)
+        status = "success"
+        response_text = model_result.response
+        houses = model_result.houses
+        tool_status = "success"
+        tool_result = f"matched={len(houses)}"
+    except Exception as exc:
+        status = "failure"
+        response_text = f"模型调用失败: {exc}"
+        houses = []
+        tool_status = "failure"
+        tool_result = str(exc)
+
     response = ChatResponse(
         session_id=req.session_id,
-        response="已查询到匹配房源。",
+        response=response_text,
         houses=houses,
-        status="success",
+        status=status,
         tool_results=[
             ToolResult(
                 tool_name="house_search",
-                status="success",
-                result=f"matched={len(houses)}",
+                status=tool_status,
+                result=tool_result if tool_result else "unknown error",
             )
         ],
         timestamp=int(time.time()),

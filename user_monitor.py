@@ -14,7 +14,7 @@ def parse_args() -> argparse.Namespace:
         default="http://localhost:8080/api/v1/chat",
         help="Target chat endpoint URL",
     )
-    parser.add_argument("--model-ip", default="127.0.0.1", help="model_ip in request payload")
+    parser.add_argument("--model-ip", default="https://api.siliconflow.cn/v1", help="model_ip in request payload")
     parser.add_argument(
         "--session-id",
         default=f"cli-{int(time.time())}",
@@ -25,7 +25,7 @@ def parse_args() -> argparse.Namespace:
         default="查询海淀区的房源",
         help="message in request payload",
     )
-    parser.add_argument("--timeout", type=float, default=10.0, help="request timeout in seconds")
+    parser.add_argument("--timeout", type=float, default=300.0, help="request timeout in seconds")
     return parser.parse_args()
 
 
