@@ -1,3 +1,7 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+# 
+
 """
 基于 LangGraph 的租房助手 Agent
 - 通过 MCP (stdio) 连接租房仿真 API 工具
@@ -10,10 +14,10 @@ import sys
 from pathlib import Path
 from typing import List
 
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 from langchain_mcp_adapters.client import MultiServerMCPClient
-from langgraph.prebuilt import create_react_agent
+from langchain.agents import create_agent
 from langgraph.checkpoint.memory import MemorySaver
 
 from typedef import ToolResult
@@ -59,15 +63,12 @@ class RentAssistAgent:
 
     def __init__(self):
         self._mcp_client: MultiServerMCPClient | None = None
+        self._tools = None
         self._agent = None
         self._checkpointer = MemorySaver()
 
-    async def _ensure_initialized(self, model_ip: str):
-        """懒初始化：首次调用时启动 MCP 客户端并构建 Agent"""
-        if self._agent is not None:
-            return
-
-        # 启动 MCP 客户端（stdio 模式连接 mcp_server.py）
+    async def start_mcp(self):
+        """启动 MCP 客户端，应在应用启动时调用"""
         self._mcp_client = MultiServerMCPClient(
             {
                 "rent_api": {
@@ -78,9 +79,13 @@ class RentAssistAgent:
             }
         )
         await self._mcp_client.__aenter__()
-        tools = self._mcp_client.get_tools()
+        self._tools = self._mcp_client.get_tools()
 
-        # 构建 LLM
+    def _ensure_agent(self, model_ip: str):
+        """首次请求时根据 model_ip 构建 Agent"""
+        if self._agent is not None:
+            return
+
         llm = ChatOpenAI(
             base_url=self._build_base_url(model_ip),
             api_key=_config.get("api_key", "EMPTY"),
@@ -88,12 +93,11 @@ class RentAssistAgent:
             temperature=0.2,
         )
 
-        # 构建 ReAct Agent
-        self._agent = create_react_agent(
+        self._agent = create_agent(
             model=llm,
-            tools=tools,
+            tools=self._tools,
             checkpointer=self._checkpointer,
-            prompt=SYSTEM_PROMPT,
+            system_prompt=SYSTEM_PROMPT,
         )
 
     async def chat(self, *, model_ip: str, session_id: str, message: str) -> dict:
@@ -103,15 +107,16 @@ class RentAssistAgent:
         Returns:
             dict with keys: response (str), houses (list[str]), tool_results (list[ToolResult])
         """
-        await self._ensure_initialized(model_ip)
+        if self._tools is None:
+            raise RuntimeError("MCP 客户端未启动，请先调用 start_mcp()")
+
+        self._ensure_agent(model_ip)
 
         config = {"configurable": {"thread_id": session_id}}
         input_msg = {"messages": [HumanMessage(content=message)]}
 
-        # 运行 Agent
         result = await self._agent.ainvoke(input_msg, config=config)
 
-        # 从结果中提取信息
         messages = result["messages"]
         return self._extract_response(messages)
 
@@ -120,19 +125,18 @@ class RentAssistAgent:
         if self._mcp_client is not None:
             await self._mcp_client.__aexit__(None, None, None)
             self._mcp_client = None
+            self._tools = None
             self._agent = None
 
     @staticmethod
     def _extract_response(messages: list) -> dict:
         """从 Agent 输出的消息列表中提取最终回复、房源ID和工具调用结果"""
-        # 最后一条 AI 消息作为回复
         response_text = ""
         for msg in reversed(messages):
             if isinstance(msg, AIMessage) and msg.content and not msg.tool_calls:
                 response_text = msg.content
                 break
 
-        # 收集所有工具调用结果
         tool_results: List[ToolResult] = []
         houses = set()
 
@@ -143,7 +147,6 @@ class RentAssistAgent:
                     data = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
                     status = "success"
                     result_str = msg.content if isinstance(msg.content, str) else json.dumps(data, ensure_ascii=False)
-                    # 从工具结果中提取房源 ID
                     _extract_house_ids(data, houses)
                 except Exception:
                     status = "success"

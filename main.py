@@ -18,6 +18,7 @@ agent = RentAssistAgent()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await agent.start_mcp()
     yield
     await agent.close()
 
