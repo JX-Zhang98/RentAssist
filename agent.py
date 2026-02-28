@@ -110,6 +110,10 @@ SYSTEM_PROMPT = f"""你是一个专业的北京租房助手。你的用户工号
 - 默认使用安居客平台，除非用户指定其他平台
 - 搜索结果较多时，优先展示最匹配用户需求的前5套
 - 回复使用中文，简洁明了
+- 回答中所有和房源信息相关的内容，**一定要带上每个房源对应的house_id**
+- 回答中所有和房源信息相关的内容，**一定要带上每个房源对应的house_id**
+- 回答中所有和房源信息相关的内容，**一定要带上每个房源对应的house_id**
+
 """
 
 
@@ -230,7 +234,7 @@ class RentAssistAgent:
         # 从 response_text 中提取 HF_1234 形式的房源ID
         _HOUSE_ID_RE = re.compile(r"HF_\d+")
         for hid in _HOUSE_ID_RE.findall(response_text):
-            houses.append(hid)
+            houses.append(hid) if hid not in houses else None
 
         final_text = response_text or "抱歉，我暂时无法回答这个问题。"
 
