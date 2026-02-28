@@ -11,16 +11,70 @@
 
 import json
 import sys
+import logging
+import time
 from pathlib import Path
-from typing import List
+from typing import List, Any
+from uuid import UUID
 
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+from langchain_core.outputs import LLMResult
 from langchain_openai import ChatOpenAI
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain.agents import create_agent
 from langgraph.checkpoint.memory import MemorySaver
 
 from typedef import ToolResult
+
+# Agent 内部日志
+_log_dir = Path(__file__).parent / "log"
+_log_dir.mkdir(parents=True, exist_ok=True)
+
+_agent_logger = logging.getLogger("agent_trace")
+_agent_logger.setLevel(logging.DEBUG)
+_agent_logger.propagate = False
+if not _agent_logger.handlers:
+    _fh = logging.FileHandler(_log_dir / "agent_trace.log", encoding="utf-8")
+    _fh.setFormatter(logging.Formatter("%(asctime)s | %(message)s"))
+    _agent_logger.addHandler(_fh)
+
+
+class AgentTraceCallback(BaseCallbackHandler):
+    """记录 Agent 内部每次 LLM 调用和工具调用的详细日志"""
+
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+
+    def _log(self, event: str, data: dict):
+        record = {"session_id": self.session_id, "event": event, "ts": time.time(), **data}
+        _agent_logger.debug(json.dumps(record, ensure_ascii=False, default=str))
+
+    def on_llm_start(self, serialized: dict, prompts: list[str], **kwargs):
+        self._log("llm_start", {"model": serialized.get("id", [""]), "prompts": prompts})
+
+    def on_chat_model_start(self, serialized: dict, messages: list, **kwargs):
+        msgs = []
+        for batch in messages:
+            for m in batch:
+                msgs.append({"role": m.type, "content": str(m.content)[:500]})
+        self._log("chat_model_start", {"model": serialized.get("id", [""]), "messages": msgs})
+
+    def on_llm_end(self, response: LLMResult, **kwargs):
+        generations = []
+        for gen_list in response.generations:
+            for gen in gen_list:
+                generations.append(str(gen.text)[:1000] if gen.text else str(gen.message.content)[:1000])
+        self._log("llm_end", {"output": generations})
+
+    def on_tool_start(self, serialized: dict, input_str: str, **kwargs):
+        self._log("tool_start", {"tool": serialized.get("name", ""), "input": input_str[:1000]})
+
+    def on_tool_end(self, output: str, **kwargs):
+        self._log("tool_end", {"output": str(output)[:2000]})
+
+    def on_tool_error(self, error: BaseException, **kwargs):
+        self._log("tool_error", {"error": str(error)[:1000]})
 
 # 加载配置
 _config_path = Path(__file__).parent / "config.json"
@@ -64,6 +118,7 @@ class RentAssistAgent:
     def __init__(self):
         self._mcp_client: MultiServerMCPClient | None = None
         self._tools = None
+        self._llm: ChatOpenAI | None = None
         self._agent = None
         self._checkpointer = MemorySaver()
 
@@ -83,18 +138,21 @@ class RentAssistAgent:
 
     def _ensure_agent(self, model_ip: str):
         """首次请求时根据 model_ip 构建 Agent"""
-        if self._agent is not None:
+        if self._llm is not None:
             return
 
-        llm = ChatOpenAI(
+        self._llm = ChatOpenAI(
             base_url=self._build_base_url(model_ip),
             api_key=_config.get("api_key", "EMPTY"),
             model=_config.get("model_name", "Qwen/Qwen3-32B"),
             temperature=0.2,
         )
 
-        self._agent = create_agent(
-            model=llm,
+    def _build_agent(self, session_id: str):
+        """每次请求时用带 Session-ID 头的 LLM 构建 Agent"""
+        llm_with_headers = self._llm.bind(extra_headers={"Session-ID": session_id})
+        return create_agent(
+            model=llm_with_headers,
             tools=self._tools,
             checkpointer=self._checkpointer,
             system_prompt=SYSTEM_PROMPT,
@@ -111,14 +169,24 @@ class RentAssistAgent:
             raise RuntimeError("MCP 客户端未启动，请先调用 start_mcp()")
 
         self._ensure_agent(model_ip)
+        agent = self._build_agent(session_id)
 
-        config = {"configurable": {"thread_id": session_id}}
+        callback = AgentTraceCallback(session_id)
+        callback._log("user_input", {"message": message})
+
+        config = {"configurable": {"thread_id": session_id}, "callbacks": [callback]}
         input_msg = {"messages": [HumanMessage(content=message)]}
 
-        result = await self._agent.ainvoke(input_msg, config=config)
+        result = await agent.ainvoke(input_msg, config=config)
 
         messages = result["messages"]
-        return self._extract_response(messages)
+        response = self._extract_response(messages)
+        callback._log("agent_response", {
+            "response": response["response"][:500],
+            "houses": response["houses"],
+            "tool_count": len(response["tool_results"]),
+        })
+        return response
 
     async def close(self):
         """关闭 MCP 客户端"""
@@ -126,7 +194,7 @@ class RentAssistAgent:
             await self._mcp_client.__aexit__(None, None, None)
             self._mcp_client = None
             self._tools = None
-            self._agent = None
+            self._llm = None
 
     @staticmethod
     def _extract_response(messages: list) -> dict:
@@ -169,12 +237,20 @@ class RentAssistAgent:
         addr = model_ip.strip()
         if not addr:
             raise ValueError("model_ip 不能为空")
+        
+        # 处理xx.xx.xx.xx仅IP样式输入
+        _config_path = Path(__file__).parent / "config.json"
+        with open(_config_path, "r", encoding="utf-8") as f:
+            _config = json.load(f)
+        debugMode = _config.get("debug", False)
+        if len(addr.split(".")) == 4:
+            addr = f"http://{addr}:8888/v2" if debugMode else f"http://{addr}:8888/v1"
+
         if addr.startswith("http://") or addr.startswith("https://"):
             base = addr.rstrip("/")
         else:
             base = f"http://{addr.strip('/')}"
-        if not base.endswith("/v1"):
-            base = f"{base}/v1"
+
         return base
 
 

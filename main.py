@@ -53,6 +53,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
     response = ChatResponse(
         session_id=req.session_id,
         response=response_text,
+        message=response_text,
         houses=houses,
         status=status,
         tool_results=tool_results,

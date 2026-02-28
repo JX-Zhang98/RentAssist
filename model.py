@@ -8,6 +8,7 @@ import os
 import re
 from dataclasses import dataclass
 from typing import List
+from pathlib import Path
 
 
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{[\s\S]*\})\s*```", re.IGNORECASE)
@@ -25,7 +26,7 @@ class ChatModelService:
         self._model_name = model_name or os.getenv("CHAT_MODEL_NAME", "Qwen/Qwen3-32B")
         self._api_key = api_key or os.getenv("siliconflow_API_KEY", "EMPTY")
 
-    def chat(self, *, model_ip: str, message: str) -> ModelChatResult:
+    def chat(self, *, model_ip: str, session_id: str, message: str) -> ModelChatResult:
         client = self._build_client(model_ip=model_ip)
         completion = client.chat.completions.create(
             model=self._model_name,
@@ -41,6 +42,7 @@ class ChatModelService:
                 {"role": "user", "content": message},
             ],
             temperature=0.2,
+            extra_headers={"Session-ID": session_id},
         )
         content = completion.choices[0].message.content or ""
         return self._parse_model_output(content)
@@ -58,14 +60,20 @@ class ChatModelService:
         addr = model_ip.strip()
         if not addr:
             raise ValueError("model_ip 不能为空")
+        
+        # 处理xx.xx.xx.xx仅IP样式输入
+        _config_path = Path(__file__).parent / "config.json"
+        with open(_config_path, "r", encoding="utf-8") as f:
+            _config = json.load(f)
+        debugMode = _config.get("debug", False)
+        if len(addr.split(".")) == 4:
+            addr = f"http://{addr}:8888/v2" if debugMode else f"http://{addr}:8888/v1"
 
         if addr.startswith("http://") or addr.startswith("https://"):
             base = addr.rstrip("/")
         else:
             base = f"http://{addr.strip('/')}"
 
-        if not base.endswith("/v1"):
-            base = f"{base}/v1"
         return base
 
     @staticmethod
