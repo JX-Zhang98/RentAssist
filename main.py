@@ -25,7 +25,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
     session_logger.log_request(req)
 
     try:
-        model_result = model_service.chat(model_ip=req.model_ip, message=req.message)
+        model_result = model_service.chat(model_ip=req.model_ip, session_id=req.session_id, message=req.message)
         status = "success"
         response_text = model_result.response
         houses = model_result.houses
