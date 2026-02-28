@@ -208,37 +208,35 @@ class RentAssistAgent:
                 break
 
         tool_results: List[ToolResult] = []
-        houses = set()
+        houses = []
 
-        # TODO:可能只使用最后一轮的模型输出
-        # for msg in messages:
-        #     if isinstance(msg, ToolMessage):
-        #         tool_name = msg.name or "unknown"
-        #         try:
-        #             data = json.loads(msg.content[0]["text"], )
-        #             data = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
-        #             status = "success"
-        #             result_str = msg.content if isinstance(msg.content, str) else json.dumps(data, ensure_ascii=False)
-        #             _extract_house_ids(data, houses)
-        #         except Exception:
-        #             status = "success"
-        #             result_str = str(msg.content)
+        for msg in messages:
+            if isinstance(msg, ToolMessage):
+                tool_name = msg.name or "unknown"
+                try:
+                    data = json.loads(msg.content[0]["text"], )
+                    data = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
+                    status = "success"
+                    result_str = msg.content if isinstance(msg.content, str) else json.dumps(data, ensure_ascii=False)
+                except Exception:
+                    status = "failed"
+                    result_str = str(msg.content)
 
-        #         tool_results.append(ToolResult(
-        #             tool_name=tool_name,
-        #             status=status,
-        #             result=result_str[:2000] if len(result_str) > 2000 else result_str,
-        #         ))
+                tool_results.append(ToolResult(
+                    tool_name=tool_name,
+                    status=status,
+                    result=result_str[:2000] if len(result_str) > 2000 else result_str,
+                ))
 
         # 从 response_text 中提取 HF_1234 形式的房源ID
         _HOUSE_ID_RE = re.compile(r"HF_\d+")
         for hid in _HOUSE_ID_RE.findall(response_text):
-            houses.add(hid)
+            houses.append(hid)
 
         final_text = response_text or "抱歉，我暂时无法回答这个问题。"
 
-        # 有房源时，response 序列化为 JSON 字符串
-        if houses:
+        # 如果已经调用了工具，判定为租房相关，response 序列化为 JSON 字符串
+        if len(tool_results) > 0:
             response = json.dumps(
                 {"message": final_text, "houses": list(houses)},
                 ensure_ascii=False,
