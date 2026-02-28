@@ -133,8 +133,7 @@ class RentAssistAgent:
                 }
             }
         )
-        await self._mcp_client.__aenter__()
-        self._tools = self._mcp_client.get_tools()
+        self._tools = await self._mcp_client.get_tools()
 
     def _ensure_agent(self, model_ip: str):
         """首次请求时根据 model_ip 构建 Agent"""
@@ -190,7 +189,6 @@ class RentAssistAgent:
     async def close(self):
         """关闭 MCP 客户端"""
         if self._mcp_client is not None:
-            await self._mcp_client.__aexit__(None, None, None)
             self._mcp_client = None
             self._tools = None
             self._llm = None
