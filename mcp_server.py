@@ -5,6 +5,7 @@
 
 import os
 import json
+import re
 from pathlib import Path
 import httpx
 from mcp.server.fastmcp import FastMCP
@@ -18,6 +19,37 @@ API_BASE_URL = _config.get("apiaddr", "http://localhost:8080")
 DEFAULT_USER_ID = _config.get("userid", "")
 
 mcp = FastMCP("RentAssist", instructions="北京租房仿真 API 工具集")
+
+# ==================== 缓存 ====================
+_CACHE_DIR = Path(__file__).parent / "cache"
+_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _cache_filename(path: str, params: dict | None, user_id: str | None) -> str:
+    """用路径和参数明文拼接缓存文件名"""
+    # /api/houses/by_platform -> houses_by_platform
+    name = path.strip("/").replace("/", "_").replace("api_", "")
+    parts = [name]
+    if user_id:
+        parts.append(f"uid={user_id}")
+    for k, v in sorted((params or {}).items()):
+        parts.append(f"{k}={v}")
+    filename = "__".join(parts)
+    # 去掉文件名中不安全的字符
+    filename = re.sub(r'[^\w=.,\-]', '_', filename)
+    return filename + ".json"
+
+
+def _cache_get(path: str, params: dict | None, user_id: str | None) -> str | None:
+    fp = _CACHE_DIR / _cache_filename(path, params, user_id)
+    if fp.exists():
+        return fp.read_text(encoding="utf-8")
+    return None
+
+
+def _cache_set(path: str, params: dict | None, user_id: str | None, value: str) -> None:
+    fp = _CACHE_DIR / _cache_filename(path, params, user_id)
+    fp.write_text(value, encoding="utf-8")
 
 
 def _headers(user_id: str | None = None) -> dict:
@@ -33,8 +65,12 @@ def _build_params(**kwargs) -> dict:
 
 
 async def _get(path: str, params: dict | None = None, user_id: str | None = None) -> str:
+    cached = _cache_get(path, params, user_id)
+    if cached is not None:
+        return cached
     async with httpx.AsyncClient(base_url=API_BASE_URL, timeout=30) as client:
         resp = await client.get(path, params=params, headers=_headers(user_id))
+        _cache_set(path, params, user_id, resp.text)
         return resp.text
 
 
