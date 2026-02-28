@@ -119,8 +119,7 @@ class RentAssistAgent:
     def __init__(self):
         self._mcp_client: MultiServerMCPClient | None = None
         self._tools = None
-        self._llm: ChatOpenAI | None = None
-        self._agent = None
+        self._base_url: str | None = None
         self._checkpointer = MemorySaver()
 
     async def start_mcp(self):
@@ -136,23 +135,23 @@ class RentAssistAgent:
         )
         self._tools = await self._mcp_client.get_tools()
 
-    def _ensure_agent(self, model_ip: str):
-        """首次请求时根据 model_ip 构建 Agent"""
-        if self._llm is not None:
+    def _ensure_base_url(self, model_ip: str):
+        """首次请求时根据 model_ip 计算 base_url"""
+        if self._base_url is not None:
             return
+        self._base_url = self._build_base_url(model_ip)
 
-        self._llm = ChatOpenAI(
-            base_url=self._build_base_url(model_ip),
+    def _build_agent(self, session_id: str):
+        """每次请求时构建带 Session-ID 头的 Agent"""
+        llm = ChatOpenAI(
+            base_url=self._base_url,
             api_key=_config.get("api_key", "EMPTY"),
             model=_config.get("model_name", "Qwen/Qwen3-32B"),
             temperature=0.2,
+            default_headers={"Session-ID": session_id},
         )
-
-    def _build_agent(self, session_id: str):
-        """每次请求时用带 Session-ID 头的 LLM 构建 Agent"""
-        llm_with_headers = self._llm.bind(extra_headers={"Session-ID": session_id})
         return create_agent(
-            model=llm_with_headers,
+            model=llm,
             tools=self._tools,
             checkpointer=self._checkpointer,
             system_prompt=SYSTEM_PROMPT,
@@ -168,7 +167,7 @@ class RentAssistAgent:
         if self._tools is None:
             raise RuntimeError("MCP 客户端未启动，请先调用 start_mcp()")
 
-        self._ensure_agent(model_ip)
+        self._ensure_base_url(model_ip)
         agent = self._build_agent(session_id)
 
         callback = AgentTraceCallback(session_id)
@@ -192,7 +191,7 @@ class RentAssistAgent:
         if self._mcp_client is not None:
             self._mcp_client = None
             self._tools = None
-            self._llm = None
+            self._base_url = None
 
     @staticmethod
     def _extract_response(messages: list) -> dict:
