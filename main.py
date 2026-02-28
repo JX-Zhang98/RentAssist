@@ -40,12 +40,10 @@ async def chat(req: ChatRequest) -> ChatResponse:
         )
         status = "success"
         response_text = result["response"]
-        houses = result["houses"]
         tool_results = result["tool_results"]
     except Exception as exc:
         status = "failure"
         response_text = f"Agent 调用失败: {exc}"
-        houses = []
         tool_results = [
             ToolResult(tool_name="agent", status="failure", result=str(exc) or "unknown error")
         ]
@@ -53,8 +51,6 @@ async def chat(req: ChatRequest) -> ChatResponse:
     response = ChatResponse(
         session_id=req.session_id,
         response=response_text,
-        message=response_text,
-        houses=houses,
         status=status,
         tool_results=tool_results,
         timestamp=int(time.time()),

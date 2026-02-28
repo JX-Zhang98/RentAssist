@@ -27,8 +27,6 @@ class ChatResponse(BaseModel):
 
     session_id: str = Field(min_length=1)
     response: str = Field(min_length=1)
-    message: str = Field(min_length=1)
-    houses: List[str]
     status: Literal["success", "failure"]
     tool_results: List[ToolResult]
     timestamp: int

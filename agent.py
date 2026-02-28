@@ -183,7 +183,6 @@ class RentAssistAgent:
         response = self._extract_response(messages)
         callback._log("agent_response", {
             "response": response["response"][:500],
-            "houses": response["houses"],
             "tool_count": len(response["tool_results"]),
         })
         return response
@@ -198,7 +197,11 @@ class RentAssistAgent:
 
     @staticmethod
     def _extract_response(messages: list) -> dict:
-        """从 Agent 输出的消息列表中提取最终回复、房源ID和工具调用结果"""
+        """从 Agent 输出的消息列表中提取最终回复、房源ID和工具调用结果
+
+        - 无房源时 response 为纯文本
+        - 有房源时 response 为 JSON 字符串: {"message":"...", "houses":["ID1","ID2"]}
+        """
         response_text = ""
         for msg in reversed(messages):
             if isinstance(msg, AIMessage) and msg.content and not msg.tool_calls:
@@ -226,9 +229,19 @@ class RentAssistAgent:
                     result=result_str[:2000] if len(result_str) > 2000 else result_str,
                 ))
 
+        final_text = response_text or "抱歉，我暂时无法回答这个问题。"
+
+        # 有房源时，response 序列化为 JSON 字符串
+        if houses:
+            response = json.dumps(
+                {"message": final_text, "houses": list(houses)},
+                ensure_ascii=False,
+            )
+        else:
+            response = final_text
+
         return {
-            "response": response_text or "抱歉，我暂时无法回答这个问题。",
-            "houses": list(houses),
+            "response": response,
             "tool_results": tool_results,
         }
 
