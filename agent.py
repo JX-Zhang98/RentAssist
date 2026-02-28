@@ -46,6 +46,10 @@ class AgentTraceCallback(BaseCallbackHandler):
 
     def __init__(self, session_id: str):
         self.session_id = session_id
+        self.llm_calls = 0
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
+        self.total_tokens = 0
 
     def _log(self, event: str, data: dict):
         record = {"session_id": self.session_id, "event": event, "ts": time.time(), **data}
@@ -62,11 +66,41 @@ class AgentTraceCallback(BaseCallbackHandler):
         self._log("chat_model_start", {"model": serialized.get("id", [""]), "messages": msgs})
 
     def on_llm_end(self, response: LLMResult, **kwargs):
+        self.llm_calls += 1
         generations = []
         for gen_list in response.generations:
             for gen in gen_list:
                 generations.append(str(gen.text)[:1000] if gen.text else str(gen.message.content)[:1000])
-        self._log("llm_end", {"output": generations})
+
+        # 提取 token 用量
+        token_usage = {}
+        if response.llm_output and "token_usage" in response.llm_output:
+            token_usage = response.llm_output["token_usage"]
+        elif response.llm_output and "usage" in response.llm_output:
+            token_usage = response.llm_output["usage"]
+
+        prompt_tokens = token_usage.get("prompt_tokens", 0)
+        completion_tokens = token_usage.get("completion_tokens", 0)
+        total = token_usage.get("total_tokens", prompt_tokens + completion_tokens)
+
+        self.total_prompt_tokens += prompt_tokens
+        self.total_completion_tokens += completion_tokens
+        self.total_tokens += total
+
+        self._log("llm_end", {
+            "output": generations,
+            "llm_call_index": self.llm_calls,
+            "token_usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total,
+            },
+            "cumulative_tokens": {
+                "prompt_tokens": self.total_prompt_tokens,
+                "completion_tokens": self.total_completion_tokens,
+                "total_tokens": self.total_tokens,
+            },
+        })
 
     def on_tool_start(self, serialized: dict, input_str: str, **kwargs):
         self._log("tool_start", {"tool": serialized.get("name", ""), "input": input_str[:1000]})
@@ -187,6 +221,12 @@ class RentAssistAgent:
         callback._log("agent_response", {
             "response": response["response"][:500],
             "tool_count": len(response["tool_results"]),
+        })
+        callback._log("token_summary", {
+            "llm_calls": callback.llm_calls,
+            "total_prompt_tokens": callback.total_prompt_tokens,
+            "total_completion_tokens": callback.total_completion_tokens,
+            "total_tokens": callback.total_tokens,
         })
         return response
 
