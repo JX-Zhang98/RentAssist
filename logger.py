@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from typing import  List
 from threading import Lock
 from datetime import datetime
-
+from copy import deepcopy
 from typedef import *
 
 class SessionLog(BaseModel):
@@ -39,22 +39,23 @@ class SessionFileLogger:
         event = ResponseLogEvent(
             event_type="response",
             timestamp=int(time.time()),
-            payload=resp,
+            
         )
+        copy_resp = deepcopy(resp)
         try:
-            respjson = json.load(resp.response)
-            resp.response = json.dumps(respjson, indent=2, ensure_ascii=False)
+            respjson = json.load(copy_resp.response)
+            copy_resp.response = json.dumps(respjson, indent=2, ensure_ascii=False)
 
-            for i in range(len(resp.tool_results)):
-                res = resp.tool_results[i]
+            for i in range(len(copy_resp.tool_results)):
+                res = copy_resp.tool_results[i]
                 resobj = json.loads(res.result)
                 res.result = json.dumps(resobj, indent=2, ensure_ascii=False)
-                resp.tool_results[i] = res
-                
+                copy_resp.tool_results[i] = res
+
         except:
             pass
-        event.payload = resp
-        self._append_event(resp.session_id, event)
+        event.payload = copy_resp
+        self._append_event(copy_resp.session_id, event)
 
     def _append_event(self, session_id: str, event: LogEvent) -> None:
         with self._lock:
