@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from typing import  List
 from threading import Lock
 from datetime import datetime
-from copy import deepcopy
+
 from typedef import *
 
 class SessionLog(BaseModel):
@@ -36,21 +36,12 @@ class SessionFileLogger:
         self._append_event(req.session_id, event)
 
     def log_response(self, resp: ChatResponse) -> None:
-        copy_resp = deepcopy(resp)
-        
-        try:
-            copy_resp.response = json.loads(copy_resp.response)
-        except Exception as e:
-            print("[-] 日志格式化显示失败：", e)
-            print("response: ", copy_resp.response)
-            pass
-
         event = ResponseLogEvent(
             event_type="response",
             timestamp=int(time.time()),
-            payload=copy_resp
+            payload=resp,
         )
-        self._append_event(copy_resp.session_id, event)
+        self._append_event(resp.session_id, event)
 
     def _append_event(self, session_id: str, event: LogEvent) -> None:
         with self._lock:
