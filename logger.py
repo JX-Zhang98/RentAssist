@@ -50,7 +50,10 @@ class SessionFileLogger:
                 res.result = json.loads(res.result)
                 copy_resp.tool_results[i] = res
 
-        except:
+        except Exception as e:
+            print("[-] 日志格式化显示失败：", e)
+            print("response: ", copy_resp.response)
+            print("tool_res:", copy_resp.tool_results[0].result if len(copy_resp.tool_results)>0 else None)
             pass
         event.payload = copy_resp
         self._append_event(copy_resp.session_id, event)
