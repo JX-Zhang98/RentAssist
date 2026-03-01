@@ -44,7 +44,7 @@ class SessionFileLogger:
         )
         
         try:
-            copy_resp.response = json.load(copy_resp.response)
+            copy_resp.response = json.loads(copy_resp.response)
             for i in range(len(copy_resp.tool_results)):
                 res = copy_resp.tool_results[i]
                 res.result = json.loads(res.result)
