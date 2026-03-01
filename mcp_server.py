@@ -225,12 +225,12 @@ async def get_houses_by_platform(
         page: 页码，默认 1
         page_size: 每页条数，默认 10，最大 10000
     """
-    if sort_by and sort_order is None:
-        sort_order = "asc"
-        if subway_line and subway_station is not None:
-            sort_by = "subway"
-        else:
-            sort_by = "price"
+    # if sort_by and sort_order is None:
+    #     sort_order = "asc"
+    #     if subway_line and subway_station is not None:
+    #         sort_by = "subway"
+    #     else:
+    #         sort_by = "price"
 
     params = _build_params(
         listing_platform=listing_platform, district=district, area=area,
