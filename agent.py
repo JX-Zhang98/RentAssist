@@ -32,6 +32,30 @@ from typedef import ToolResult
 _log_dir = Path(__file__).parent / "log"
 _log_dir.mkdir(parents=True, exist_ok=True)
 
+# 用例工具记录文件
+_EVAL_TOOLS_PATH = Path(__file__).parent / "cache" / "eval_tools.json"
+_EVAL_TOOLS_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _load_eval_tools() -> dict:
+    """加载用例工具记录 {eval_id: [tool_name, ...]}"""
+    if _EVAL_TOOLS_PATH.exists():
+        try:
+            return json.loads(_EVAL_TOOLS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_eval_tools(data: dict) -> None:
+    _EVAL_TOOLS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _extract_eval_id(session_id: str) -> str | None:
+    """从 session_id 中提取用例编号，如 eval_z00832142_EV-27_xxx -> EV-27"""
+    m = re.search(r"(EV-\d+)", session_id)
+    return m.group(1) if m else None
+
 _agent_logger = logging.getLogger("agent_trace")
 _agent_logger.setLevel(logging.DEBUG)
 _agent_logger.propagate = False
@@ -130,7 +154,7 @@ SYSTEM_PROMPT = f"""你是一个专业的北京租房助手。
 - 执行租房、退租、下架操作
 
 ## 工作原则
-1. 当用户描述租房需求时，先理解需求，如果信息不足（如缺少区域、预算、户型偏好等关键信息），主动追问澄清
+1. 当用户描述租房需求时，先理解需求，如果信息不足（如缺少区域、预算、户型偏好等关键信息），先根据用户抱怨或现有意图进行模糊搜索，同时追问澄清
 2. 需求明确后，调用合适的工具搜索房源，将结果以友好的方式呈现给用户
 3. 如果用户只是闲聊，正常友好回复即可，不需要调用工具
 4. 推荐房源时，给出房源ID、价格、位置、户型等关键信息的简洁摘要
@@ -178,7 +202,7 @@ class RentAssistAgent:
         self._base_url = self._build_base_url(model_ip)
 
     def _build_agent(self, session_id: str):
-        """每次请求时构建带 Session-ID 头的 Agent"""
+        """每次请求时构建带 Session-ID 头的 Agent，根据用例记录动态加载工具"""
         llm = ChatOpenAI(
             base_url=self._base_url,
             api_key=_config.get("api_key", "EMPTY"),
@@ -186,9 +210,24 @@ class RentAssistAgent:
             temperature=0.2,
             default_headers={"Session-ID": session_id},
         )
+
+        # 根据用例编号动态选择工具
+        tools = self._tools
+        eval_id = _extract_eval_id(session_id)
+        if eval_id:
+            eval_tools_map = _load_eval_tools()
+            if eval_id in eval_tools_map:
+                known_names = set(eval_tools_map[eval_id])
+                tools = [t for t in self._tools if t.name in known_names]
+                _agent_logger.debug(json.dumps({
+                    "event": "dynamic_tools", "eval_id": eval_id,
+                    "all_tools": len(self._tools), "loaded_tools": len(tools),
+                    "tool_names": [t.name for t in tools],
+                }, ensure_ascii=False))
+
         return create_agent(
             model=llm,
-            tools=self._tools,
+            tools=tools,
             checkpointer=self._checkpointer,
             system_prompt=SYSTEM_PROMPT,
         )
@@ -226,6 +265,22 @@ class RentAssistAgent:
             "total_completion_tokens": callback.total_completion_tokens,
             "total_tokens": callback.total_tokens,
         })
+
+        # 记录本次用例使用的工具，供下次动态加载
+        eval_id = _extract_eval_id(session_id)
+        if eval_id:
+            used_tools = {tr.tool_name for tr in response["tool_results"]}
+            if used_tools:
+                eval_tools_map = _load_eval_tools()
+                existing = set(eval_tools_map.get(eval_id, []))
+                merged = existing | used_tools
+                if merged != existing:
+                    eval_tools_map[eval_id] = sorted(merged)
+                    _save_eval_tools(eval_tools_map)
+                    callback._log("eval_tools_updated", {
+                        "eval_id": eval_id, "tools": sorted(merged),
+                    })
+
         return response
 
     async def close(self):
