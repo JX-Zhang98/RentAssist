@@ -36,12 +36,13 @@ class SessionFileLogger:
         self._append_event(req.session_id, event)
 
     def log_response(self, resp: ChatResponse) -> None:
+        copy_resp = deepcopy(resp)
         event = ResponseLogEvent(
             event_type="response",
             timestamp=int(time.time()),
-            
+            payload=copy_resp
         )
-        copy_resp = deepcopy(resp)
+        
         try:
             respjson = json.load(copy_resp.response)
             copy_resp.response = json.dumps(respjson, indent=2, ensure_ascii=False)
