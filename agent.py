@@ -116,13 +116,12 @@ _config_path = Path(__file__).parent / "config.json"
 with open(_config_path, "r", encoding="utf-8") as f:
     _config = json.load(f)
 
-USER_ID = _config.get("userid", "")
 
 # MCP Server 路径
 MCP_SERVER_PATH = str(Path(__file__).parent / "mcp_server.py")
 
 # System Prompt
-SYSTEM_PROMPT = f"""你是一个专业的北京租房助手。你的用户工号是 {USER_ID}。
+SYSTEM_PROMPT = f"""你是一个专业的北京租房助手。
 
 ## 你的能力
 - 帮助用户搜索北京地区的租房信息，包括按区域、价格、户型、地铁距离、通勤时间等多维度筛选
@@ -133,12 +132,11 @@ SYSTEM_PROMPT = f"""你是一个专业的北京租房助手。你的用户工号
 ## 工作原则
 1. 当用户描述租房需求时，先理解需求，如果信息不足（如缺少区域、预算、户型偏好等关键信息），主动追问澄清
 2. 需求明确后，调用合适的工具搜索房源，将结果以友好的方式呈现给用户
-3. 调用房源相关工具时，user_id 参数始终传 "{USER_ID}"
-4. 如果用户只是闲聊，正常友好回复即可，不需要调用工具
-5. 推荐房源时，给出房源ID、价格、位置、户型等关键信息的简洁摘要
-6. 近地铁：地铁距离 800 米以内；地铁可达：1000 米以内
-7. 如果用户确认要租某套房，必须调用 rent_house 工具完成操作
-8. 如果用户要退租或下架，必须调用对应的 terminate_rental 或 take_offline 工具
+3. 如果用户只是闲聊，正常友好回复即可，不需要调用工具
+4. 推荐房源时，给出房源ID、价格、位置、户型等关键信息的简洁摘要
+5. 近地铁：地铁距离 800 米以内；地铁可达：1000 米以内
+6. 如果用户确认要租某套房，必须调用 rent_house 工具完成操作
+7. 如果用户要退租或下架，必须调用对应的 terminate_rental 或 take_offline 工具
 
 ## 注意事项
 - 默认使用安居客平台，除非用户指定其他平台
@@ -297,14 +295,13 @@ class RentAssistAgent:
         addr = model_ip.strip()
         if not addr:
             raise ValueError("model_ip 不能为空")
-        
+
+        # 调试模式 --model-ip 1.2.3.4debug        
+        debugMode = addr.endswith("debug")
+
         # 处理xx.xx.xx.xx仅IP样式输入
-        _config_path = Path(__file__).parent / "config.json"
-        with open(_config_path, "r", encoding="utf-8") as f:
-            _config = json.load(f)
-        debugMode = _config.get("debug", False)
-        if len(addr.split(".")) == 4:
-            addr = f"http://{addr}:8888/v2" if debugMode else f"http://{addr}:8888/v1"
+        if not addr.startswith("http") and len(addr.split(".")) == 4:
+            addr = f"http://{addr[:-5]}:8888/v2" if debugMode else f"http://{addr}:8888/v1"
 
         if addr.startswith("http://") or addr.startswith("https://"):
             base = addr.rstrip("/")

@@ -65,9 +65,6 @@ def _build_params(**kwargs) -> dict:
 
 
 async def _get(path: str, params: dict | None = None, user_id: str | None = None) -> str:
-    cached = _cache_get(path, params, user_id)
-    if cached is not None:
-        return cached
     async with httpx.AsyncClient(base_url=API_BASE_URL, timeout=30) as client:
         resp = await client.get(path, params=params, headers=_headers(user_id))
         _cache_set(path, params, user_id, resp.text)
@@ -137,25 +134,23 @@ async def get_landmark_stats() -> str:
 # ==================== 房源接口 ====================
 
 @mcp.tool()
-async def get_house_by_id(house_id: str, user_id: str | None = None) -> str:
+async def get_house_by_id(house_id: str) -> str:
     """根据房源 ID 获取单套房源详情（安居客）。
 
     Args:
         house_id: 房源 ID，如 HF_2001
-        user_id: 用户工号
     """
-    return await _get(f"/api/houses/{house_id}", user_id=user_id)
+    return await _get(f"/api/houses/{house_id}", user_id=DEFAULT_USER_ID)
 
 
 @mcp.tool()
-async def get_house_listings(house_id: str, user_id: str | None = None) -> str:
+async def get_house_listings(house_id: str) -> str:
     """根据房源 ID 获取该房源在链家/安居客/58同城各平台的全部挂牌记录。
 
     Args:
         house_id: 房源 ID，如 HF_2001
-        user_id: 用户工号
     """
-    return await _get(f"/api/houses/listings/{house_id}", user_id=user_id)
+    return await _get(f"/api/houses/listings/{house_id}", user_id=DEFAULT_USER_ID)
 
 
 @mcp.tool()
@@ -164,7 +159,6 @@ async def get_houses_by_community(
     listing_platform: str | None = None,
     page: int | None = None,
     page_size: int | None = None,
-    user_id: str | None = None,
 ) -> str:
     """按小区名查询该小区下可租房源。默认每页10条，未传 listing_platform 时只返回安居客。
 
@@ -173,10 +167,9 @@ async def get_houses_by_community(
         listing_platform: 挂牌平台：链家/安居客/58同城，不传默认安居客
         page: 页码，默认 1
         page_size: 每页条数，默认 10，最大 10000
-        user_id: 用户工号
     """
     params = _build_params(community=community, listing_platform=listing_platform, page=page, page_size=page_size)
-    return await _get("/api/houses/by_community", params, user_id=user_id)
+    return await _get("/api/houses/by_community", params, user_id=DEFAULT_USER_ID)
 
 
 @mcp.tool()
@@ -204,7 +197,6 @@ async def get_houses_by_platform(
     sort_order: str | None = None,
     page: int | None = None,
     page_size: int | None = None,
-    user_id: str | None = None,
 ) -> str:
     """查询可租房源，支持多维度筛选。这是最强大的房源搜索工具。
 
@@ -232,7 +224,6 @@ async def get_houses_by_platform(
         sort_order: asc 或 desc
         page: 页码，默认 1
         page_size: 每页条数，默认 10，最大 10000
-        user_id: 用户工号
     """
     params = _build_params(
         listing_platform=listing_platform, district=district, area=area,
@@ -245,7 +236,7 @@ async def get_houses_by_platform(
         commute_to_xierqi_max=commute_to_xierqi_max,
         sort_by=sort_by, sort_order=sort_order, page=page, page_size=page_size,
     )
-    return await _get("/api/houses/by_platform", params, user_id=user_id)
+    return await _get("/api/houses/by_platform", params, user_id=DEFAULT_USER_ID)
 
 
 @mcp.tool()
@@ -255,7 +246,6 @@ async def get_houses_nearby(
     listing_platform: str | None = None,
     page: int | None = None,
     page_size: int | None = None,
-    user_id: str | None = None,
 ) -> str:
     """以地标为圆心查询附近可租房源，返回直线距离、步行距离、步行时间。
     需先通过地标接口获得 landmark_id。
@@ -266,13 +256,12 @@ async def get_houses_nearby(
         listing_platform: 挂牌平台：链家/安居客/58同城，不传默认安居客
         page: 页码，默认 1
         page_size: 每页条数，默认 10，最大 10000
-        user_id: 用户工号
     """
     params = _build_params(
         landmark_id=landmark_id, max_distance=max_distance,
         listing_platform=listing_platform, page=page, page_size=page_size,
     )
-    return await _get("/api/houses/nearby", params, user_id=user_id)
+    return await _get("/api/houses/nearby", params, user_id=DEFAULT_USER_ID)
 
 
 @mcp.tool()
@@ -280,7 +269,6 @@ async def get_nearby_landmarks(
     community: str,
     type: str | None = None,
     max_distance_m: float | None = None,
-    user_id: str | None = None,
 ) -> str:
     """查询某小区周边地标（商超/公园），按距离排序。用于回答「附近有没有商场/公园」。
 
@@ -288,59 +276,51 @@ async def get_nearby_landmarks(
         community: 小区名，用于定位基准点
         type: 地标类型：shopping(商超) 或 park(公园)，不传则不过滤
         max_distance_m: 最大距离（米），默认 3000
-        user_id: 用户工号
     """
     params = _build_params(community=community, type=type, max_distance_m=max_distance_m)
-    return await _get("/api/houses/nearby_landmarks", params, user_id=user_id)
+    return await _get("/api/houses/nearby_landmarks", params, user_id=DEFAULT_USER_ID)
 
 
 @mcp.tool()
-async def get_house_stats(user_id: str | None = None) -> str:
-    """获取房源统计信息（总套数、按状态/行政区/户型分布、价格区间等）。
-
-    Args:
-        user_id: 用户工号
-    """
-    return await _get("/api/houses/stats", user_id=user_id)
+async def get_house_stats() -> str:
+    """获取房源统计信息（总套数、按状态/行政区/户型分布、价格区间等）。"""
+    return await _get("/api/houses/stats", user_id=DEFAULT_USER_ID)
 
 
 @mcp.tool()
-async def rent_house(house_id: str, listing_platform: str, user_id: str | None = None) -> str:
+async def rent_house(house_id: str, listing_platform: str) -> str:
     """租房 - 将该房源设为已租。必须调用此接口才算完成租房操作。
 
     Args:
         house_id: 房源 ID，如 HF_2001
         listing_platform: 必填，挂牌平台：链家/安居客/58同城
-        user_id: 用户工号
     """
     params = _build_params(listing_platform=listing_platform)
-    return await _post(f"/api/houses/{house_id}/rent", params, user_id=user_id)
+    return await _post(f"/api/houses/{house_id}/rent", params, user_id=DEFAULT_USER_ID)
 
 
 @mcp.tool()
-async def terminate_rental(house_id: str, listing_platform: str, user_id: str | None = None) -> str:
+async def terminate_rental(house_id: str, listing_platform: str) -> str:
     """退租 - 将该房源恢复为可租。
 
     Args:
         house_id: 房源 ID，如 HF_2001
         listing_platform: 必填，挂牌平台：链家/安居客/58同城
-        user_id: 用户工号
     """
     params = _build_params(listing_platform=listing_platform)
-    return await _post(f"/api/houses/{house_id}/terminate", params, user_id=user_id)
+    return await _post(f"/api/houses/{house_id}/terminate", params, user_id=DEFAULT_USER_ID)
 
 
 @mcp.tool()
-async def take_offline(house_id: str, listing_platform: str, user_id: str | None = None) -> str:
+async def take_offline(house_id: str, listing_platform: str) -> str:
     """下架 - 将该房源设为下架。
 
     Args:
         house_id: 房源 ID，如 HF_2001
         listing_platform: 必填，挂牌平台：链家/安居客/58同城
-        user_id: 用户工号
     """
     params = _build_params(listing_platform=listing_platform)
-    return await _post(f"/api/houses/{house_id}/offline", params, user_id=user_id)
+    return await _post(f"/api/houses/{house_id}/offline", params, user_id=DEFAULT_USER_ID)
 
 
 if __name__ == "__main__":
