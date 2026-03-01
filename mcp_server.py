@@ -225,6 +225,13 @@ async def get_houses_by_platform(
         page: 页码，默认 1
         page_size: 每页条数，默认 10，最大 10000
     """
+    if sort_by and sort_order is None:
+        sort_order = "asc"
+        if subway_line and subway_station is not None:
+            sort_by = "subway"
+        else:
+            sort_by = "price"
+
     params = _build_params(
         listing_platform=listing_platform, district=district, area=area,
         min_price=min_price, max_price=max_price, bedrooms=bedrooms,
@@ -236,7 +243,15 @@ async def get_houses_by_platform(
         commute_to_xierqi_max=commute_to_xierqi_max,
         sort_by=sort_by, sort_order=sort_order, page=page, page_size=page_size,
     )
-    return await _get("/api/houses/by_platform", params, user_id=DEFAULT_USER_ID)
+    tool_res = await _get("/api/houses/by_platform", params, user_id=DEFAULT_USER_ID)
+    try:
+        all_houses = json.load(tool_res)["data"]["items"]
+        if len(all_houses) > 10:
+            all_houses = all_houses[:10]
+            tool_res = json.dumps(tool_res)
+    except:
+        pass
+    return tool_res
 
 
 @mcp.tool()
