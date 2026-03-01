@@ -44,13 +44,10 @@ class SessionFileLogger:
         )
         
         try:
-            respjson = json.load(copy_resp.response)
-            copy_resp.response = json.dumps(respjson, indent=2, ensure_ascii=False)
-
+            copy_resp.response = json.load(copy_resp.response)
             for i in range(len(copy_resp.tool_results)):
                 res = copy_resp.tool_results[i]
-                resobj = json.loads(res.result)
-                res.result = json.dumps(resobj, indent=2, ensure_ascii=False)
+                res.result = json.loads(res.result)
                 copy_resp.tool_results[i] = res
 
         except:
