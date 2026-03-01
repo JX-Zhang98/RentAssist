@@ -41,6 +41,19 @@ class SessionFileLogger:
             timestamp=int(time.time()),
             payload=resp,
         )
+        try:
+            respjson = json.load(resp.response)
+            resp.response = json.dumps(respjson, indent=2, ensure_ascii=False)
+
+            for i in range(len(resp.tool_results)):
+                res = resp.tool_results[i]
+                resobj = json.loads(res.result)
+                res.result = json.dumps(resobj, indent=2, ensure_ascii=False)
+                resp.tool_results[i] = res
+                
+        except:
+            pass
+        event.payload = resp
         self._append_event(resp.session_id, event)
 
     def _append_event(self, session_id: str, event: LogEvent) -> None:
