@@ -16,7 +16,7 @@ import logging
 import time
 from pathlib import Path
 from typing import List, Any
-from uuid import UUID
+from uuid import uuid4
 
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
@@ -249,12 +249,13 @@ class RentAssistAgent:
         callback._log("user_input", {"message": message})
 
         config = {"configurable": {"thread_id": session_id}, "callbacks": [callback]}
-        input_msg = {"messages": [HumanMessage(content=message)]}
+        turn_message_id = str(uuid4())
+        input_msg = {"messages": [HumanMessage(content=message, id=turn_message_id)]}
 
         result = await agent.ainvoke(input_msg, config=config)
 
         messages = result["messages"]
-        response = self._extract_response(messages)
+        response = self._extract_response(messages, turn_message_id=turn_message_id)
         callback._log("agent_response", {
             "response": response["response"][:500],
             "tool_count": len(response["tool_results"]),
@@ -291,7 +292,7 @@ class RentAssistAgent:
             self._base_url = None
 
     @staticmethod
-    def _extract_response(messages: list) -> dict:
+    def _extract_response(messages: list, turn_message_id: str | None = None) -> dict:
         """从 Agent 输出的消息列表中提取最终回复、房源ID和工具调用结果
 
         - 无房源时 response 为纯文本
@@ -306,7 +307,15 @@ class RentAssistAgent:
         tool_results: List[ToolResult] = []
         houses = []
 
-        for msg in messages:
+        tool_scan_start = 0
+        if turn_message_id:
+            for i in range(len(messages) - 1, -1, -1):
+                msg = messages[i]
+                if isinstance(msg, HumanMessage) and msg.id == turn_message_id:
+                    tool_scan_start = i + 1
+                    break
+
+        for msg in messages[tool_scan_start:]:
             if isinstance(msg, ToolMessage):
                 tool_name = msg.name or "unknown"
                 try:
