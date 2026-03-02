@@ -244,13 +244,13 @@ async def get_houses_by_platform(
         sort_by=sort_by, sort_order=sort_order, page=page, page_size=page_size,
     )
     tool_res = await _get("/api/houses/by_platform", params, user_id=DEFAULT_USER_ID)
-    try:
-        all_houses = json.load(tool_res)["data"]["items"]
-        if len(all_houses) > 10:
-            all_houses = all_houses[:10]
-            tool_res = json.dumps(tool_res)
-    except:
-        pass
+    # try:
+    #     all_houses = json.load(tool_res)["data"]["items"]
+    #     if len(all_houses) > 10:
+    #         all_houses = all_houses[:10]
+    #         tool_res = json.dumps(tool_res)
+    # except:
+    #     pass
     return tool_res
 
 

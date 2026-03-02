@@ -157,7 +157,7 @@ SYSTEM_PROMPT = f"""你是一个专业的北京租房助手。
 1. 当用户描述租房需求时，先理解需求，如果信息不足（如缺少区域、预算、户型偏好等关键信息），先根据用户抱怨或现有意图进行模糊搜索，同时追问澄清
 2. 需求明确后，调用合适的工具搜索房源，将结果以友好的方式呈现给用户
 3. 如果用户只是闲聊，正常友好回复即可，不需要调用工具
-4. 推荐房源时，给出房源ID、价格、位置、户型等关键信息的简洁摘要
+4. 推荐房源时，给出房源ID、价格、位置、户型等关键信息的简洁摘要，有多个候选时，给出匹配度最高的5个
 5. 近地铁：地铁距离 800 米以内；地铁可达：1000 米以内
 6. 如果用户确认要租某套房，必须调用 rent_house 工具完成操作
 7. 如果用户要退租或下架，必须调用对应的 terminate_rental 或 take_offline 工具
@@ -169,7 +169,6 @@ SYSTEM_PROMPT = f"""你是一个专业的北京租房助手。
 - 回答中所有和房源信息相关的内容，**一定要带上每个房源对应的house_id**
 - 回答中所有和房源信息相关的内容，**一定要带上每个房源对应的house_id**
 - 回答中所有和房源信息相关的内容，**一定要带上每个房源对应的house_id**
-- 除非用户提问房间具体情况，否则仅给出推荐房源ID即可，不需要详细介绍房间详细信息
 """
 
 
@@ -336,7 +335,7 @@ class RentAssistAgent:
         # 从 response_text 中提取 HF_1234 形式的房源ID
         _HOUSE_ID_RE = re.compile(r"HF_\d+")
         for hid in _HOUSE_ID_RE.findall(response_text):
-            houses.append(hid) if hid not in houses and len(houses) < 5 else None
+            houses.append(hid) if hid not in houses else None
 
         final_text = response_text or "抱歉，我暂时无法回答这个问题。"
 
