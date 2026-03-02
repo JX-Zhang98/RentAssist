@@ -14,17 +14,21 @@ import sys
 import re
 import logging
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import List, Any
 from uuid import uuid4
 
 from langchain_core.callbacks import BaseCallbackHandler
-from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, AnyMessage, RemoveMessage
 from langchain_core.outputs import LLMResult
 from langchain_openai import ChatOpenAI
+from langchain.agents.middleware.types import AgentMiddleware
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain.agents import create_agent
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
+from langgraph.runtime import Runtime
 
 from typedef import ToolResult
 
@@ -173,6 +177,67 @@ SYSTEM_PROMPT = f"""你是一个专业的北京租房助手。
 """
 
 
+HistoryComposeHook = Callable[[list[AnyMessage], str], list[AnyMessage] | None]
+
+
+class HistoryComposeMiddleware(AgentMiddleware):
+    """在模型调用前执行历史消息组合 Hook 链。"""
+
+    def __init__(self, session_id: str, hooks: dict[str, HistoryComposeHook]):
+        self._session_id = session_id
+        self._hooks = hooks
+
+    def before_model(self, state: dict[str, Any], runtime: Runtime[Any] | None) -> dict[str, Any] | None:
+        return self._apply_hooks(state)
+
+    async def abefore_model(
+        self, state: dict[str, Any], runtime: Runtime[Any] | None
+    ) -> dict[str, Any] | None:
+        return self._apply_hooks(state)
+
+    def _apply_hooks(self, state: dict[str, Any]) -> dict[str, Any] | None:
+        if not self._hooks:
+            return None
+
+        messages = state.get("messages")
+        if not isinstance(messages, list):
+            return None
+
+        current_messages = list(messages)
+        changed = False
+
+        for hook_name, hook in self._hooks.items():
+            try:
+                updated = hook(current_messages, self._session_id)
+            except Exception as exc:
+                _agent_logger.debug(json.dumps({
+                    "event": "history_hook_error",
+                    "session_id": self._session_id,
+                    "hook_name": hook_name,
+                    "error": str(exc),
+                }, ensure_ascii=False))
+                continue
+
+            if updated is None:
+                continue
+            if not isinstance(updated, list):
+                _agent_logger.debug(json.dumps({
+                    "event": "history_hook_invalid_return",
+                    "session_id": self._session_id,
+                    "hook_name": hook_name,
+                    "return_type": str(type(updated)),
+                }, ensure_ascii=False))
+                continue
+
+            current_messages = updated
+            changed = True
+
+        if not changed:
+            return None
+
+        return {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *current_messages]}
+
+
 class RentAssistAgent:
     """租房助手 Agent，管理 MCP 客户端生命周期和多 session 对话"""
 
@@ -181,6 +246,25 @@ class RentAssistAgent:
         self._tools = None
         self._base_url: str | None = None
         self._checkpointer = MemorySaver()
+        self._history_hooks: dict[str, HistoryComposeHook] = {}
+
+    def register_history_hook(self, name: str, hook: HistoryComposeHook) -> None:
+        """注册历史消息组合 Hook。"""
+        if not name:
+            raise ValueError("hook name 不能为空")
+        self._history_hooks[name] = hook
+
+    def unregister_history_hook(self, name: str) -> None:
+        """移除历史消息组合 Hook。"""
+        self._history_hooks.pop(name, None)
+
+    def clear_history_hooks(self) -> None:
+        """清空历史消息组合 Hook。"""
+        self._history_hooks.clear()
+
+    def list_history_hooks(self) -> list[str]:
+        """返回当前已注册的 Hook 名称（按注册顺序）。"""
+        return list(self._history_hooks.keys())
 
     async def start_mcp(self):
         """启动 MCP 客户端，应在应用启动时调用"""
@@ -228,6 +312,7 @@ class RentAssistAgent:
         return create_agent(
             model=llm,
             tools=tools,
+            middleware=[HistoryComposeMiddleware(session_id=session_id, hooks=self._history_hooks)],
             checkpointer=self._checkpointer,
             system_prompt=SYSTEM_PROMPT,
         )
