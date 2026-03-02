@@ -31,6 +31,17 @@ class RankSnapshot:
     is_evaluating: bool
 
 
+@dataclass
+class EvalRunResult:
+    user_id: str
+    started_at: datetime
+    finished_at: datetime
+    duration_seconds: float
+    rank: int
+    score: float
+    start_response: dict[str, Any]
+
+
 class EvalApiClient:
     def __init__(self, *, verify_ssl: bool, request_timeout: float) -> None:
         self.verify_ssl = verify_ssl
@@ -126,7 +137,7 @@ def extract_user_snapshot(rank_rows: list[dict[str, Any]], user_id: str) -> Rank
         return RankSnapshot(
             user_id=user_id,
             rank=parse_int(item.get("rank")),
-            score=parse_int(item.get("score")),
+            score=parse_float(item.get("score")),
             is_evaluating=normalize_is_evaluating(item.get("is_evaluating")),
         )
     return None
@@ -160,6 +171,68 @@ def poll_until_finished(
                 f"等待测评结束超时，已等待 {elapsed:.1f}s，timeout={timeout_seconds:.1f}s"
             )
         sleep_fn(interval_seconds)
+
+
+def run(
+    *,
+    client: EvalApiClient,
+    user_id: str,
+    username: str,
+    agent_ip: str,
+    agent_port: int,
+    limit: int,
+    interval_seconds: float,
+    timeout_seconds: float,
+    on_started: Callable[[dict[str, Any]], None] | None = None,
+    on_poll: Callable[[int, float, RankSnapshot | None], None] | None = None,
+    on_query_error: Callable[[Exception], None] | None = None,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    now_fn: Callable[[], float] = time.time,
+) -> EvalRunResult:
+    started_at = datetime.now()
+    started_perf = time.perf_counter()
+
+    start_payload = client.start_task(
+        user_id=user_id,
+        username=username,
+        agent_ip=agent_ip,
+        agent_port=agent_port,
+    )
+    if on_started is not None:
+        on_started(start_payload)
+
+    def fetch_snapshot_once() -> RankSnapshot | None:
+        try:
+            rows = client.query_rank_rows(limit=limit)
+        except (requests.RequestException, ValueError) as exc:
+            if on_query_error is not None:
+                on_query_error(exc)
+            return None
+        return extract_user_snapshot(rows, user_id)
+
+    final_snapshot = poll_until_finished(
+        fetch_snapshot=fetch_snapshot_once,
+        interval_seconds=interval_seconds,
+        timeout_seconds=timeout_seconds,
+        sleep_fn=sleep_fn,
+        now_fn=now_fn,
+        on_poll=on_poll,
+    )
+
+    finished_at = datetime.now()
+    duration_seconds = time.perf_counter() - started_perf
+    if final_snapshot.rank is None or final_snapshot.score is None:
+        raise ValueError("测评结束但未拿到完整 rank/score")
+
+    return EvalRunResult(
+        user_id=user_id,
+        started_at=started_at,
+        finished_at=finished_at,
+        duration_seconds=duration_seconds,
+        rank=final_snapshot.rank,
+        score=final_snapshot.score,
+        start_response=start_payload,
+    )
 
 
 def format_snapshot_log(attempt: int, elapsed: float, snapshot: RankSnapshot | None) -> str:
@@ -202,44 +275,35 @@ def main() -> int:
     print(
         f"开始启动测评: user_id={args.user_id}, agent={args.agent_ip}:{args.agent_port}"
     )
+
     try:
-        start_payload = client.start_task(
+        result = run(
+            client=client,
             user_id=args.user_id,
             username=args.username,
             agent_ip=args.agent_ip,
             agent_port=args.agent_port,
+            limit=args.limit,
+            interval_seconds=args.interval,
+            timeout_seconds=args.timeout,
+            on_started=lambda payload: print(f"启动接口返回: {payload}"),
+            on_poll=lambda attempt, elapsed, snapshot: print(
+                format_snapshot_log(attempt, elapsed, snapshot)
+            ),
+            on_query_error=lambda exc: print(f"查询状态失败，稍后重试: {exc}"),
         )
     except requests.RequestException as exc:
         print(f"启动测评失败: {exc}")
         return 1
-
-    print(f"启动接口返回: {start_payload}")
-    print("开始轮询测评状态...")
-
-    def fetch_snapshot_once() -> RankSnapshot | None:
-        try:
-            rows = client.query_rank_rows(limit=args.limit)
-        except (requests.RequestException, ValueError) as exc:
-            print(f"查询状态失败，稍后重试: {exc}")
-            return None
-        return extract_user_snapshot(rows, args.user_id)
-
-    try:
-        final_snapshot = poll_until_finished(
-            fetch_snapshot=fetch_snapshot_once,
-            interval_seconds=args.interval,
-            timeout_seconds=args.timeout,
-            on_poll=lambda attempt, elapsed, snapshot: print(
-                format_snapshot_log(attempt, elapsed, snapshot)
-            ),
-        )
     except TimeoutError as exc:
         print(str(exc))
         return 1
 
     print("\n测评结束，最终结果如下：")
-    print(f"最终排名: {final_snapshot.rank}")
-    print(f"最终分数: {final_snapshot.score}")
+    print(f"开始时间: {result.started_at.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"耗时: {result.duration_seconds:.2f}s")
+    print(f"最终排名: {result.rank}")
+    print(f"最终分数: {result.score}")
     return 0
 
 
