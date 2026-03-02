@@ -183,6 +183,30 @@ HistoryComposeHook3 = Callable[[list[AnyMessage], str, str | None], list[AnyMess
 HistoryComposeHook = HistoryComposeHook2 | HistoryComposeHook3
 
 
+def compose_prompt_messages(
+    messages: list[AnyMessage], session_id: str, turn_message_id: str | None = None
+) -> list[AnyMessage]:
+    """模型消息组合入口（当前为透传实现）。
+
+    这是后续做“历史压缩/摘要/窗口裁剪”的唯一推荐改造点。
+    当前实现不做任何业务变换，只把模型即将收到的消息按原样返回，便于你先观察
+    实际 prompt 形态，再在这里逐步加入策略。
+
+    Args:
+        messages: 当前轮模型调用前的完整消息序列（含系统提示、历史、人类消息、工具消息）
+        session_id: 会话 ID，后续可用于按会话策略分流
+        turn_message_id: 当前轮用户输入消息 ID，后续可用于“只压缩历史，不改当前轮”
+    """
+    # 调试建议：
+    # 1) 在这里打断点，查看 messages 的真实结构和顺序。
+    # 2) 后续策略先从复制并改写 this list 开始，不要直接原地修改传入对象。
+    prompt_messages = list(messages)
+
+    # 当前阶段：不做任何组合调整，直接透传。
+    # 当你确定压缩规则后，只需要修改这里的返回内容即可。
+    return prompt_messages
+
+
 def classify_message_nature(message: AnyMessage) -> str:
     """识别消息性质：user / assistant / assistant_tool_call / tool / other。"""
     if isinstance(message, HumanMessage):
@@ -295,7 +319,9 @@ class RentAssistAgent:
         self._tools = None
         self._base_url: str | None = None
         self._checkpointer = MemorySaver()
-        self._history_hooks: dict[str, HistoryComposeHook] = {}
+        self._history_hooks: dict[str, HistoryComposeHook] = {
+            "compose_prompt_messages": compose_prompt_messages
+        }
 
     def register_history_hook(self, name: str, hook: HistoryComposeHook) -> None:
         """注册历史消息组合 Hook。"""
