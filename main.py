@@ -3,6 +3,7 @@
 #
 
 import time
+import re
 import uvicorn
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -10,10 +11,32 @@ from fastapi import FastAPI
 
 from typedef import *
 from logger import SessionFileLogger
-from agent import RentAssistAgent
+from agent import RentAssistAgent, _extract_eval_id
 
 
 agent = RentAssistAgent()
+EVAL_TARGET_CASE_FILE = Path(__file__).parent / "cache" / "eval_target_case.txt"
+
+
+def _normalize_eval_id(eval_id: str | None) -> str | None:
+    """将 EV-1 或 EV-01 格式规范化为 EV-01"""
+    if not eval_id:
+        return None
+    match = re.match(r"EV-(\d+)$", eval_id.strip(), flags=re.IGNORECASE)
+    if not match:
+        return None
+    return f"EV-{int(match.group(1)):02d}"
+
+
+def _read_target_eval_case() -> str | None:
+    if not EVAL_TARGET_CASE_FILE.exists():
+        return None
+    try:
+        raw = EVAL_TARGET_CASE_FILE.read_text(encoding="utf-8").strip()
+    except Exception as e:
+        print(f"[警告] 读取标记文件失败: {e}")
+        return None
+    return _normalize_eval_id(raw)
 
 
 @asynccontextmanager
@@ -31,6 +54,22 @@ session_logger = SessionFileLogger(Path("log"))
 async def chat(req: ChatRequest) -> ChatResponse:
     start = time.perf_counter()
     session_logger.log_request(req)
+
+    target_eval_case = _read_target_eval_case()
+    if target_eval_case is not None:
+        req_eval_case = _normalize_eval_id(_extract_eval_id(req.session_id))
+        if req_eval_case != target_eval_case:
+            print(f"[过滤] session_id={req.session_id}, 当前用例={req_eval_case}, 目标用例={target_eval_case}")
+            response = ChatResponse(
+                session_id=req.session_id,
+                response="{}",
+                status="success",
+                tool_results=[],
+                timestamp=int(time.time()),
+                duration_ms=max(int((time.perf_counter() - start) * 1000), 1),
+            )
+            session_logger.log_response(response)
+            return response
 
     try:
         result = await agent.chat(
