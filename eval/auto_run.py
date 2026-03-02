@@ -1,5 +1,6 @@
 import argparse
 import csv
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,11 @@ EVAL_TARGET_CASE_FILE = Path(__file__).resolve().parents[1] / "cache" / "eval_ta
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="按用例逐个执行测评并记录每个用例的分数/排名")
+    parser.add_argument(
+        "--case-list",
+        default="",
+        help="指定要执行的用例列表，逗号分隔，如 EV-01,EV-05,EV-60；设置后优先于 --case-start/--case-end",
+    )
     parser.add_argument("--case-start", type=int, default=1, help="起始用例编号(含)，如 1 表示 EV-01")
     parser.add_argument("--case-end", type=int, default=60, help="结束用例编号(含)，如 60 表示 EV-60")
     parser.add_argument("--gap", type=float, default=3.0, help="轮与轮之间等待秒数")
@@ -25,8 +31,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--agent-ip", default="10.107.156.121", help="Agent服务IP")
     parser.add_argument("--agent-port", type=int, default=8080, help="Agent服务端口")
     parser.add_argument("--limit", type=int, default=2000, help="榜单查询上限")
-    parser.add_argument("--interval", type=float, default=5.0, help="轮询间隔(秒)")
-    parser.add_argument("--timeout", type=float, default=1800.0, help="单轮总超时(秒)")
+    parser.add_argument("--interval", type=float, default=60.0, help="轮询间隔(秒)")
+    parser.add_argument("--timeout", type=float, default=5400.0, help="单轮总超时(秒)")
     parser.add_argument("--request-timeout", type=float, default=10.0, help="单次HTTP请求超时(秒)")
     parser.add_argument("--verify-ssl", action="store_true", help="开启SSL证书校验")
     return parser
@@ -34,6 +40,37 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _format_case_name(case_no: int) -> str:
     return f"EV-{case_no:02d}"
+
+
+def _normalize_case_token(token: str) -> str:
+    text = token.strip().upper()
+    if not text:
+        raise ValueError("case_list 中存在空项")
+
+    match = re.fullmatch(r"(?:EV-)?(\d{1,3})", text)
+    if not match:
+        raise ValueError(f"非法用例名: {token}")
+
+    case_no = int(match.group(1))
+    if case_no <= 0:
+        raise ValueError(f"用例编号必须大于0: {token}")
+    return _format_case_name(case_no)
+
+
+def _parse_case_list(case_list: str) -> list[str]:
+    tokens = [x for x in re.split(r"[,\s;，]+", case_list.strip()) if x]
+    if not tokens:
+        raise ValueError("--case-list 不能为空")
+
+    cases: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        case_name = _normalize_case_token(token)
+        if case_name in seen:
+            continue
+        seen.add(case_name)
+        cases.append(case_name)
+    return cases
 
 
 def _write_target_case(case_name: str) -> None:
@@ -101,14 +138,22 @@ def write_csv(records: list[dict[str, Any]], output_path: str, append: bool) -> 
 
 def main() -> int:
     args = build_parser().parse_args()
-    if args.case_start <= 0:
-        print("--case-start 必须大于 0")
-        return 1
-    if args.case_end < args.case_start:
-        print("--case-end 必须大于等于 --case-start")
+    try:
+        if args.case_list.strip():
+            cases = _parse_case_list(args.case_list)
+        else:
+            if args.case_start <= 0:
+                print("--case-start 必须大于 0")
+                return 1
+            if args.case_end < args.case_start:
+                print("--case-end 必须大于等于 --case-start")
+                return 1
+            cases = [_format_case_name(i) for i in range(args.case_start, args.case_end + 1)]
+    except ValueError as exc:
+        print(str(exc))
         return 1
 
-    cases = [_format_case_name(i) for i in range(args.case_start, args.case_end + 1)]
+    print(f"本次共执行 {len(cases)} 个用例: {', '.join(cases)}")
     client = EvalApiClient(verify_ssl=args.verify_ssl, request_timeout=args.request_timeout)
     records: list[dict[str, Any]] = []
 
