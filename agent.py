@@ -14,6 +14,7 @@ import sys
 import re
 import logging
 import time
+import inspect
 from collections.abc import Callable
 from pathlib import Path
 from typing import List, Any
@@ -177,15 +178,45 @@ SYSTEM_PROMPT = f"""你是一个专业的北京租房助手。
 """
 
 
-HistoryComposeHook = Callable[[list[AnyMessage], str], list[AnyMessage] | None]
+HistoryComposeHook2 = Callable[[list[AnyMessage], str], list[AnyMessage] | None]
+HistoryComposeHook3 = Callable[[list[AnyMessage], str, str | None], list[AnyMessage] | None]
+HistoryComposeHook = HistoryComposeHook2 | HistoryComposeHook3
+
+
+def classify_message_nature(message: AnyMessage) -> str:
+    """识别消息性质：user / assistant / assistant_tool_call / tool / other。"""
+    if isinstance(message, HumanMessage):
+        return "user"
+    if isinstance(message, ToolMessage):
+        return "tool"
+    if isinstance(message, AIMessage):
+        return "assistant_tool_call" if message.tool_calls else "assistant"
+    return "other"
+
+
+def split_messages_by_turn(
+    messages: list[AnyMessage], turn_message_id: str | None
+) -> tuple[list[AnyMessage], list[AnyMessage]]:
+    """按当前轮用户消息 ID 切分消息列表，返回 (history, current_turn)。"""
+    if not turn_message_id:
+        return [], list(messages)
+
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if isinstance(msg, HumanMessage) and msg.id == turn_message_id:
+            return list(messages[:i]), list(messages[i:])
+    return [], list(messages)
 
 
 class HistoryComposeMiddleware(AgentMiddleware):
     """在模型调用前执行历史消息组合 Hook 链。"""
 
-    def __init__(self, session_id: str, hooks: dict[str, HistoryComposeHook]):
+    def __init__(
+        self, session_id: str, hooks: dict[str, HistoryComposeHook], turn_message_id: str | None = None
+    ):
         self._session_id = session_id
         self._hooks = hooks
+        self._turn_message_id = turn_message_id
 
     def before_model(self, state: dict[str, Any], runtime: Runtime[Any] | None) -> dict[str, Any] | None:
         return self._apply_hooks(state)
@@ -208,7 +239,7 @@ class HistoryComposeMiddleware(AgentMiddleware):
 
         for hook_name, hook in self._hooks.items():
             try:
-                updated = hook(current_messages, self._session_id)
+                updated = self._invoke_hook(hook, current_messages)
             except Exception as exc:
                 _agent_logger.debug(json.dumps({
                     "event": "history_hook_error",
@@ -236,6 +267,24 @@ class HistoryComposeMiddleware(AgentMiddleware):
             return None
 
         return {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *current_messages]}
+
+    def _invoke_hook(self, hook: HistoryComposeHook, messages: list[AnyMessage]) -> list[AnyMessage] | None:
+        positional_count = self._count_positional_params(hook)
+        if positional_count >= 3:
+            return hook(messages, self._session_id, self._turn_message_id)  # type: ignore[misc]
+        return hook(messages, self._session_id)  # type: ignore[misc]
+
+    @staticmethod
+    def _count_positional_params(hook: HistoryComposeHook) -> int:
+        try:
+            sig = inspect.signature(hook)
+        except (TypeError, ValueError):
+            return 2
+        count = 0
+        for p in sig.parameters.values():
+            if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD):
+                count += 1
+        return count
 
 
 class RentAssistAgent:
@@ -285,7 +334,7 @@ class RentAssistAgent:
             return
         self._base_url = self._build_base_url(model_ip)
 
-    def _build_agent(self, session_id: str):
+    def _build_agent(self, session_id: str, turn_message_id: str | None = None):
         """每次请求时构建带 Session-ID 头的 Agent，根据用例记录动态加载工具"""
         llm = ChatOpenAI(
             base_url=self._base_url,
@@ -312,7 +361,13 @@ class RentAssistAgent:
         return create_agent(
             model=llm,
             tools=tools,
-            middleware=[HistoryComposeMiddleware(session_id=session_id, hooks=self._history_hooks)],
+            middleware=[
+                HistoryComposeMiddleware(
+                    session_id=session_id,
+                    hooks=self._history_hooks,
+                    turn_message_id=turn_message_id,
+                )
+            ],
             checkpointer=self._checkpointer,
             system_prompt=SYSTEM_PROMPT,
         )
@@ -328,13 +383,13 @@ class RentAssistAgent:
             raise RuntimeError("MCP 客户端未启动，请先调用 start_mcp()")
 
         self._ensure_base_url(model_ip)
-        agent = self._build_agent(session_id)
+        turn_message_id = str(uuid4())
+        agent = self._build_agent(session_id, turn_message_id=turn_message_id)
 
         callback = AgentTraceCallback(session_id)
         callback._log("user_input", {"message": message})
 
         config = {"configurable": {"thread_id": session_id}, "callbacks": [callback]}
-        turn_message_id = str(uuid4())
         input_msg = {"messages": [HumanMessage(content=message, id=turn_message_id)]}
 
         result = await agent.ainvoke(input_msg, config=config)
