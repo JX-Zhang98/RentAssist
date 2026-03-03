@@ -14,17 +14,20 @@ import sys
 import re
 import logging
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import List, Any
-from uuid import uuid4
 
 from langchain_core.callbacks import BaseCallbackHandler
-from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, AnyMessage, RemoveMessage
 from langchain_core.outputs import LLMResult
 from langchain_openai import ChatOpenAI
+from langchain.agents.middleware.types import AgentMiddleware
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain.agents import create_agent
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
+from langgraph.runtime import Runtime
 
 from typedef import ToolResult
 
@@ -172,6 +175,110 @@ SYSTEM_PROMPT = f"""你是一个专业的北京租房助手。
 """
 
 
+HistoryComposeHook = Callable[[list[AnyMessage], str], list[AnyMessage] | None]
+
+
+def compose_prompt_messages(messages: list[AnyMessage], session_id: str) -> list[AnyMessage]:
+    """模型消息组合入口。
+
+    裁剪策略：
+    1) 最后一条是 HumanMessage：保留全部 HumanMessage + 非 tool_call 的 AIMessage；
+       删除 ToolMessage 和用于 tool_call 的 AIMessage。
+    2) 最后一条是 ToolMessage：从“最近 HumanMessage 到末尾”全保留；
+       更早历史仅保留对话层消息（Human + 非 tool_call 的 AI）。
+    """
+    _ = session_id
+    prompt_messages = list(messages)
+    if not prompt_messages:
+        return prompt_messages
+
+    def _is_dialogue_layer(msg: AnyMessage) -> bool:
+        if isinstance(msg, HumanMessage):
+            return True
+        if isinstance(msg, AIMessage) and not msg.tool_calls:
+            return True
+        return False
+
+    last = prompt_messages[-1]
+    if isinstance(last, HumanMessage):
+        return [m for m in prompt_messages if _is_dialogue_layer(m)]
+
+    if isinstance(last, ToolMessage):
+        last_human_idx = -1
+        for i in range(len(prompt_messages) - 1, -1, -1):
+            if isinstance(prompt_messages[i], HumanMessage):
+                last_human_idx = i
+                break
+
+        if last_human_idx < 0:
+            return prompt_messages
+
+        prefix = prompt_messages[:last_human_idx]
+        tail = prompt_messages[last_human_idx:]
+        trimmed_prefix = [m for m in prefix if _is_dialogue_layer(m)]
+        return [*trimmed_prefix, *tail]
+
+    return prompt_messages
+
+
+class HistoryComposeMiddleware(AgentMiddleware):
+    """在模型调用前执行历史消息组合 Hook 链。"""
+
+    def __init__(self, session_id: str, hooks: dict[str, HistoryComposeHook]):
+        self._session_id = session_id
+        self._hooks = hooks
+
+    def before_model(self, state: dict[str, Any], runtime: Runtime[Any] | None) -> dict[str, Any] | None:
+        return self._apply_hooks(state)
+
+    async def abefore_model(
+        self, state: dict[str, Any], runtime: Runtime[Any] | None
+    ) -> dict[str, Any] | None:
+        return self._apply_hooks(state)
+
+    def _apply_hooks(self, state: dict[str, Any]) -> dict[str, Any] | None:
+        if not self._hooks:
+            return None
+
+        messages = state.get("messages")
+        if not isinstance(messages, list):
+            return None
+
+        current_messages = list(messages)
+        changed = False
+
+        for hook_name, hook in self._hooks.items():
+            try:
+                updated = hook(current_messages, self._session_id)
+            except Exception as exc:
+                _agent_logger.debug(json.dumps({
+                    "event": "history_hook_error",
+                    "session_id": self._session_id,
+                    "hook_name": hook_name,
+                    "error": str(exc),
+                }, ensure_ascii=False))
+                continue
+
+            if updated is None:
+                continue
+            if not isinstance(updated, list):
+                _agent_logger.debug(json.dumps({
+                    "event": "history_hook_invalid_return",
+                    "session_id": self._session_id,
+                    "hook_name": hook_name,
+                    "return_type": str(type(updated)),
+                }, ensure_ascii=False))
+                continue
+
+            current_messages = updated
+            changed = True
+
+        if not changed:
+            return None
+
+        return {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *current_messages]}
+
+
 class RentAssistAgent:
     """租房助手 Agent，管理 MCP 客户端生命周期和多 session 对话"""
 
@@ -180,6 +287,27 @@ class RentAssistAgent:
         self._tools = None
         self._base_url: str | None = None
         self._checkpointer = MemorySaver()
+        self._history_hooks: dict[str, HistoryComposeHook] = {
+            "compose_prompt_messages": compose_prompt_messages
+        }
+
+    def register_history_hook(self, name: str, hook: HistoryComposeHook) -> None:
+        """注册历史消息组合 Hook。"""
+        if not name:
+            raise ValueError("hook name 不能为空")
+        self._history_hooks[name] = hook
+
+    def unregister_history_hook(self, name: str) -> None:
+        """移除历史消息组合 Hook。"""
+        self._history_hooks.pop(name, None)
+
+    def clear_history_hooks(self) -> None:
+        """清空历史消息组合 Hook。"""
+        self._history_hooks.clear()
+
+    def list_history_hooks(self) -> list[str]:
+        """返回当前已注册的 Hook 名称（按注册顺序）。"""
+        return list(self._history_hooks.keys())
 
     async def start_mcp(self):
         """启动 MCP 客户端，应在应用启动时调用"""
@@ -206,7 +334,6 @@ class RentAssistAgent:
             base_url=self._base_url,
             api_key=_config.get("api_key", "EMPTY"),
             model=_config.get("model_name", "Qwen/Qwen3-32B"),
-            temperature=0.2,
             default_headers={"Session-ID": session_id},
         )
 
@@ -227,6 +354,7 @@ class RentAssistAgent:
         return create_agent(
             model=llm,
             tools=tools,
+            middleware=[HistoryComposeMiddleware(session_id=session_id, hooks=self._history_hooks)],
             checkpointer=self._checkpointer,
             system_prompt=SYSTEM_PROMPT,
         )
@@ -248,13 +376,12 @@ class RentAssistAgent:
         callback._log("user_input", {"message": message})
 
         config = {"configurable": {"thread_id": session_id}, "callbacks": [callback]}
-        turn_message_id = str(uuid4())
-        input_msg = {"messages": [HumanMessage(content=message, id=turn_message_id)]}
+        input_msg = {"messages": [HumanMessage(content=message)]}
 
         result = await agent.ainvoke(input_msg, config=config)
 
         messages = result["messages"]
-        response = self._extract_response(messages, turn_message_id=turn_message_id)
+        response = self._extract_response(messages)
         callback._log("agent_response", {
             "response": response["response"][:500],
             "tool_count": len(response["tool_results"]),
@@ -291,7 +418,7 @@ class RentAssistAgent:
             self._base_url = None
 
     @staticmethod
-    def _extract_response(messages: list, turn_message_id: str | None = None) -> dict:
+    def _extract_response(messages: list) -> dict:
         """从 Agent 输出的消息列表中提取最终回复、房源ID和工具调用结果
 
         - 无房源时 response 为纯文本
@@ -306,15 +433,7 @@ class RentAssistAgent:
         tool_results: List[ToolResult] = []
         houses = []
 
-        tool_scan_start = 0
-        if turn_message_id:
-            for i in range(len(messages) - 1, -1, -1):
-                msg = messages[i]
-                if isinstance(msg, HumanMessage) and msg.id == turn_message_id:
-                    tool_scan_start = i + 1
-                    break
-
-        for msg in messages[tool_scan_start:]:
+        for msg in messages:
             if isinstance(msg, ToolMessage):
                 tool_name = msg.name or "unknown"
                 try:
@@ -339,14 +458,11 @@ class RentAssistAgent:
 
         final_text = response_text or "抱歉，我暂时无法回答这个问题。"
 
-        # 如果已经调用了工具，判定为租房相关，response 序列化为 JSON 字符串
-        if len(tool_results) > 0:
-            response = json.dumps(
-                {"message": final_text, "houses": list(houses)},
-                ensure_ascii=False,
-            )
-        else:
-            response = final_text
+        # 强制使用json序列化response
+        response = json.dumps(
+            {"message": final_text, "houses": list(houses)},
+            ensure_ascii=False,
+        )
 
         return {
             "response": response,
