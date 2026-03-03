@@ -14,11 +14,9 @@ import sys
 import re
 import logging
 import time
-import inspect
 from collections.abc import Callable
 from pathlib import Path
 from typing import List, Any
-from uuid import uuid4
 
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, AnyMessage, RemoveMessage
@@ -178,69 +176,26 @@ SYSTEM_PROMPT = f"""你是一个专业的北京租房助手。
 """
 
 
-HistoryComposeHook2 = Callable[[list[AnyMessage], str], list[AnyMessage] | None]
-HistoryComposeHook3 = Callable[[list[AnyMessage], str, str | None], list[AnyMessage] | None]
-HistoryComposeHook = HistoryComposeHook2 | HistoryComposeHook3
+HistoryComposeHook = Callable[[list[AnyMessage], str], list[AnyMessage] | None]
 
 
-def compose_prompt_messages(
-    messages: list[AnyMessage], session_id: str, turn_message_id: str | None = None
-) -> list[AnyMessage]:
+def compose_prompt_messages(messages: list[AnyMessage], session_id: str) -> list[AnyMessage]:
     """模型消息组合入口（当前为透传实现）。
 
-    这是后续做“历史压缩/摘要/窗口裁剪”的唯一推荐改造点。
-    当前实现不做任何业务变换，只把模型即将收到的消息按原样返回，便于你先观察
-    实际 prompt 形态，再在这里逐步加入策略。
-
-    Args:
-        messages: 当前轮模型调用前的完整消息序列（含系统提示、历史、人类消息、工具消息）
-        session_id: 会话 ID，后续可用于按会话策略分流
-        turn_message_id: 当前轮用户输入消息 ID，后续可用于“只压缩历史，不改当前轮”
+    当前版本仅复制并返回消息序列，不做任何裁剪或摘要。
+    后续可在此处实现历史压缩、窗口裁剪、摘要替换等策略。
     """
-    # 调试建议：
-    # 1) 在这里打断点，查看 messages 的真实结构和顺序。
-    # 2) 后续策略先从复制并改写 this list 开始，不要直接原地修改传入对象。
+    _ = session_id
     prompt_messages = list(messages)
-
-    # 当前阶段：不做任何组合调整，直接透传。
-    # 当你确定压缩规则后，只需要修改这里的返回内容即可。
     return prompt_messages
-
-
-def classify_message_nature(message: AnyMessage) -> str:
-    """识别消息性质：user / assistant / assistant_tool_call / tool / other。"""
-    if isinstance(message, HumanMessage):
-        return "user"
-    if isinstance(message, ToolMessage):
-        return "tool"
-    if isinstance(message, AIMessage):
-        return "assistant_tool_call" if message.tool_calls else "assistant"
-    return "other"
-
-
-def split_messages_by_turn(
-    messages: list[AnyMessage], turn_message_id: str | None
-) -> tuple[list[AnyMessage], list[AnyMessage]]:
-    """按当前轮用户消息 ID 切分消息列表，返回 (history, current_turn)。"""
-    if not turn_message_id:
-        return [], list(messages)
-
-    for i in range(len(messages) - 1, -1, -1):
-        msg = messages[i]
-        if isinstance(msg, HumanMessage) and msg.id == turn_message_id:
-            return list(messages[:i]), list(messages[i:])
-    return [], list(messages)
 
 
 class HistoryComposeMiddleware(AgentMiddleware):
     """在模型调用前执行历史消息组合 Hook 链。"""
 
-    def __init__(
-        self, session_id: str, hooks: dict[str, HistoryComposeHook], turn_message_id: str | None = None
-    ):
+    def __init__(self, session_id: str, hooks: dict[str, HistoryComposeHook]):
         self._session_id = session_id
         self._hooks = hooks
-        self._turn_message_id = turn_message_id
 
     def before_model(self, state: dict[str, Any], runtime: Runtime[Any] | None) -> dict[str, Any] | None:
         return self._apply_hooks(state)
@@ -263,7 +218,7 @@ class HistoryComposeMiddleware(AgentMiddleware):
 
         for hook_name, hook in self._hooks.items():
             try:
-                updated = self._invoke_hook(hook, current_messages)
+                updated = hook(current_messages, self._session_id)
             except Exception as exc:
                 _agent_logger.debug(json.dumps({
                     "event": "history_hook_error",
@@ -291,24 +246,6 @@ class HistoryComposeMiddleware(AgentMiddleware):
             return None
 
         return {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *current_messages]}
-
-    def _invoke_hook(self, hook: HistoryComposeHook, messages: list[AnyMessage]) -> list[AnyMessage] | None:
-        positional_count = self._count_positional_params(hook)
-        if positional_count >= 3:
-            return hook(messages, self._session_id, self._turn_message_id)  # type: ignore[misc]
-        return hook(messages, self._session_id)  # type: ignore[misc]
-
-    @staticmethod
-    def _count_positional_params(hook: HistoryComposeHook) -> int:
-        try:
-            sig = inspect.signature(hook)
-        except (TypeError, ValueError):
-            return 2
-        count = 0
-        for p in sig.parameters.values():
-            if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD):
-                count += 1
-        return count
 
 
 class RentAssistAgent:
@@ -360,7 +297,7 @@ class RentAssistAgent:
             return
         self._base_url = self._build_base_url(model_ip)
 
-    def _build_agent(self, session_id: str, turn_message_id: str | None = None):
+    def _build_agent(self, session_id: str):
         """每次请求时构建带 Session-ID 头的 Agent，根据用例记录动态加载工具"""
         llm = ChatOpenAI(
             base_url=self._base_url,
@@ -387,13 +324,7 @@ class RentAssistAgent:
         return create_agent(
             model=llm,
             tools=tools,
-            middleware=[
-                HistoryComposeMiddleware(
-                    session_id=session_id,
-                    hooks=self._history_hooks,
-                    turn_message_id=turn_message_id,
-                )
-            ],
+            middleware=[HistoryComposeMiddleware(session_id=session_id, hooks=self._history_hooks)],
             checkpointer=self._checkpointer,
             system_prompt=SYSTEM_PROMPT,
         )
@@ -409,19 +340,18 @@ class RentAssistAgent:
             raise RuntimeError("MCP 客户端未启动，请先调用 start_mcp()")
 
         self._ensure_base_url(model_ip)
-        turn_message_id = str(uuid4())
-        agent = self._build_agent(session_id, turn_message_id=turn_message_id)
+        agent = self._build_agent(session_id)
 
         callback = AgentTraceCallback(session_id)
         callback._log("user_input", {"message": message})
 
         config = {"configurable": {"thread_id": session_id}, "callbacks": [callback]}
-        input_msg = {"messages": [HumanMessage(content=message, id=turn_message_id)]}
+        input_msg = {"messages": [HumanMessage(content=message)]}
 
         result = await agent.ainvoke(input_msg, config=config)
 
         messages = result["messages"]
-        response = self._extract_response(messages, turn_message_id=turn_message_id)
+        response = self._extract_response(messages)
         callback._log("agent_response", {
             "response": response["response"][:500],
             "tool_count": len(response["tool_results"]),
@@ -458,7 +388,7 @@ class RentAssistAgent:
             self._base_url = None
 
     @staticmethod
-    def _extract_response(messages: list, turn_message_id: str | None = None) -> dict:
+    def _extract_response(messages: list) -> dict:
         """从 Agent 输出的消息列表中提取最终回复、房源ID和工具调用结果
 
         - 无房源时 response 为纯文本
@@ -473,15 +403,7 @@ class RentAssistAgent:
         tool_results: List[ToolResult] = []
         houses = []
 
-        tool_scan_start = 0
-        if turn_message_id:
-            for i in range(len(messages) - 1, -1, -1):
-                msg = messages[i]
-                if isinstance(msg, HumanMessage) and msg.id == turn_message_id:
-                    tool_scan_start = i + 1
-                    break
-
-        for msg in messages[tool_scan_start:]:
+        for msg in messages:
             if isinstance(msg, ToolMessage):
                 tool_name = msg.name or "unknown"
                 try:
