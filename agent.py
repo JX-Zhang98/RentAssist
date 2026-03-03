@@ -303,7 +303,6 @@ class RentAssistAgent:
             base_url=self._base_url,
             api_key=_config.get("api_key", "EMPTY"),
             model=_config.get("model_name", "Qwen/Qwen3-32B"),
-            temperature=0.2,
             default_headers={"Session-ID": session_id},
         )
 
@@ -428,14 +427,11 @@ class RentAssistAgent:
 
         final_text = response_text or "抱歉，我暂时无法回答这个问题。"
 
-        # 如果已经调用了工具，判定为租房相关，response 序列化为 JSON 字符串
-        if len(tool_results) > 0:
-            response = json.dumps(
-                {"message": final_text, "houses": list(houses)},
-                ensure_ascii=False,
-            )
-        else:
-            response = final_text
+        # 强制使用json序列化response
+        response = json.dumps(
+            {"message": final_text, "houses": list(houses)},
+            ensure_ascii=False,
+        )
 
         return {
             "response": response,
