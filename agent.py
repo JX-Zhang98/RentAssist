@@ -180,13 +180,45 @@ HistoryComposeHook = Callable[[list[AnyMessage], str], list[AnyMessage] | None]
 
 
 def compose_prompt_messages(messages: list[AnyMessage], session_id: str) -> list[AnyMessage]:
-    """模型消息组合入口（当前为透传实现）。
+    """模型消息组合入口。
 
-    当前版本仅复制并返回消息序列，不做任何裁剪或摘要。
-    后续可在此处实现历史压缩、窗口裁剪、摘要替换等策略。
+    裁剪策略：
+    1) 最后一条是 HumanMessage：保留全部 HumanMessage + 非 tool_call 的 AIMessage；
+       删除 ToolMessage 和用于 tool_call 的 AIMessage。
+    2) 最后一条是 ToolMessage：从“最近 HumanMessage 到末尾”全保留；
+       更早历史仅保留对话层消息（Human + 非 tool_call 的 AI）。
     """
     _ = session_id
     prompt_messages = list(messages)
+    if not prompt_messages:
+        return prompt_messages
+
+    def _is_dialogue_layer(msg: AnyMessage) -> bool:
+        if isinstance(msg, HumanMessage):
+            return True
+        if isinstance(msg, AIMessage) and not msg.tool_calls:
+            return True
+        return False
+
+    last = prompt_messages[-1]
+    if isinstance(last, HumanMessage):
+        return [m for m in prompt_messages if _is_dialogue_layer(m)]
+
+    if isinstance(last, ToolMessage):
+        last_human_idx = -1
+        for i in range(len(prompt_messages) - 1, -1, -1):
+            if isinstance(prompt_messages[i], HumanMessage):
+                last_human_idx = i
+                break
+
+        if last_human_idx < 0:
+            return prompt_messages
+
+        prefix = prompt_messages[:last_human_idx]
+        tail = prompt_messages[last_human_idx:]
+        trimmed_prefix = [m for m in prefix if _is_dialogue_layer(m)]
+        return [*trimmed_prefix, *tail]
+
     return prompt_messages
 
 
