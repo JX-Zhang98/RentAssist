@@ -142,6 +142,11 @@ _config_path = Path(__file__).parent / "config.json"
 with open(_config_path, "r", encoding="utf-8") as f:
     _config = json.load(f)
 
+with open("tags.json", "r") as f:
+    tags = json.load(f)
+    positive_tags = tags['positive']
+    negative_tags = tags['negative']
+
 
 # MCP Server 路径
 MCP_SERVER_PATH = str(Path(__file__).parent / "mcp_server.py")
@@ -166,7 +171,9 @@ SYSTEM_PROMPT = f"""你是一个专业的北京租房助手。
 
 ## 注意事项
 - 默认使用安居客平台，除非用户指定其他平台
-- 用户有最近、最低等要求时，调用工具也要设置合适的排序参数
+- 用户有明确的排序要求或最近、最低等要求时才设置排序参数
+- 查询房屋可用的正向普通tag包括:{positive_tags},
+- 负向tag包括:{negative_tags}
 """
 
 
@@ -504,7 +511,7 @@ class RentAssistAgent:
             return
         self._base_url = self._build_base_url(model_ip)
 
-    def _build_agent(self, session_id: str):
+    def _build_agent(self, session_id: str, tools : list):
         """每次请求时构建带 Session-ID 头的 Agent（单次 LLM 调用模式）。
 
         与 create_react_agent 的唯一区别：tools 节点执行完后直接 END，
@@ -516,20 +523,6 @@ class RentAssistAgent:
             model=_config.get("model_name", "Qwen/Qwen3-32B"),
             default_headers={"Session-ID": session_id},
         )
-
-        # 根据用例编号动态选择工具
-        tools = self._tools
-        eval_id = _extract_eval_id(session_id)
-        if eval_id:
-            eval_tools_map = _load_eval_tools()
-            if eval_id in eval_tools_map:
-                known_names = set(eval_tools_map[eval_id])
-                tools = [t for t in self._tools if t.name in known_names]
-                _agent_logger.debug(json.dumps({
-                    "event": "dynamic_tools", "eval_id": eval_id,
-                    "all_tools": len(self._tools), "loaded_tools": len(tools),
-                    "tool_names": [t.name for t in tools],
-                }, ensure_ascii=False))
 
         model_with_tools = llm.bind_tools(tools)
         tool_node = ToolNode(tools)
@@ -601,6 +594,7 @@ class RentAssistAgent:
                 elif tool_name in _HOUSE_SEARCH_TOOLS:
                     houses_str = tm.content[0]["text"]
                     houses = json.loads(houses_str)
+
                     for hi in houses:
                         parts.append(str({
                             "id": hi["house_id"],
@@ -632,7 +626,20 @@ class RentAssistAgent:
             raise RuntimeError("MCP 客户端未启动，请先调用 start_mcp()")
 
         self._ensure_base_url(model_ip)
-        agent = self._build_agent(session_id)
+
+        eval_id = _extract_eval_id(session_id)
+        if eval_id:
+            eval_tools_map = _load_eval_tools()
+            if eval_id in eval_tools_map:
+                known_names = set(eval_tools_map[eval_id])
+                tools = [t for t in self._tools if t.name in known_names]
+                _agent_logger.debug(json.dumps({
+                    "event": "dynamic_tools", "eval_id": eval_id,
+                    "all_tools": len(self._tools), "loaded_tools": len(tools),
+                    "tool_names": [t.name for t in tools],
+                }, ensure_ascii=False))
+
+        agent = self._build_agent(session_id, tools)
 
         callback = AgentTraceCallback(session_id)
         callback._log("user_input", {"message": message})
