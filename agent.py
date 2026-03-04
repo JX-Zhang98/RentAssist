@@ -653,15 +653,15 @@ class RentAssistAgent:
 
     @staticmethod
     def _extract_response(messages: list) -> dict:
-        """从 Agent 输出的消息列表中提取最终回复、房源ID和工具调用结果
+        """从图的最终 state 中组装返回给 main.py 的响应。
 
-        单次 LLM 调用模式下：
-        - 闲聊时最后一条是 AIMessage（无 tool_calls），用其 content 作为回复
-        - 工具调用时最后一条是 ToolMessage，需从工具结果中本地提取/格式化
+        职责分工：
+        - format_results 节点（图内）：负责把工具原始 JSON → 用户友好的摘要文本，追加为 AIMessage
+        - 本方法（图外）：负责从 messages 中收集 tool_results 元数据 + 提取最终回复文本 + 提取 house_ids → 打包成 API 响应格式
         """
         _HOUSE_ID_RE = re.compile(r"HF_\d+")
 
-        # --- 收集工具结果 ---
+        # --- 1. 收集 ToolMessage → tool_results 元数据（给 ChatResponse.tool_results 用）---
         tool_results: List[ToolResult] = []
         houses = []
 
@@ -669,7 +669,6 @@ class RentAssistAgent:
             if isinstance(msg, ToolMessage):
                 tool_name = msg.name or "unknown"
                 try:
-                    data = json.loads(msg.content[0]["text"], )
                     data = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
                     status = "success"
                     result_str = msg.content if isinstance(msg.content, str) else json.dumps(data, ensure_ascii=False)
@@ -683,30 +682,21 @@ class RentAssistAgent:
                     result=result_str[:2000] if len(result_str) > 2000 else result_str,
                 ))
 
-                # 从工具结果中提取房源ID
+                # 从工具原始结果中提取房源ID
                 for hid in _HOUSE_ID_RE.findall(result_str):
                     if hid not in houses:
                         houses.append(hid)
 
-        # --- 提取 AI 文本回复 ---
+        # --- 2. 提取最终回复文本（从后往前找第一条无 tool_calls 的 AIMessage）---
+        #    闲聊 → LLM 直接回复的 AIMessage
+        #    工具调用 → format_results 节点追加的 AIMessage（摘要文本）
         response_text = ""
         for msg in reversed(messages):
             if isinstance(msg, AIMessage) and msg.content and not msg.tool_calls:
                 response_text = msg.content
                 break
 
-        # 如果没有纯文本 AI 回复（工具调用模式），从工具结果构建回复
-        if not response_text and tool_results:
-            parts = []
-            for tr in tool_results:
-                if tr.status == "success":
-                    # 尝试从工具结果中提取关键信息做简要摘要
-                    parts.append(_summarize_tool_result(tr.tool_name, tr.result))
-                else:
-                    parts.append(f"工具 {tr.tool_name} 调用失败")
-            response_text = "\n\n".join(parts)
-
-        # 从 AI 文本中也提取房源ID
+        # 从回复文本中也提取房源ID
         if response_text:
             for hid in _HOUSE_ID_RE.findall(response_text):
                 if hid not in houses:
