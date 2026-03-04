@@ -102,7 +102,7 @@ async def get_landmark_by_name(name: str) -> str:
     landmark['type'] = landmark['details']['type']
     landmark['lines'] = landmark['details']['lines']
     del landmark['details']
-    return json.dumps(tool_res)
+    return json.dumps(tool_res, ensure_ascii=False)
 
 
 @mcp.tool()
@@ -166,7 +166,7 @@ async def get_houses_by_community(
     params = _build_params(community=community, listing_platform=listing_platform, page=1, page_size=5)
     tool_res = await _get("/api/houses/by_community", params, user_id=DEFAULT_USER_ID)
     all_houses = json.loads(tool_res)["data"]["items"]
-    tool_res = json.dumps(all_houses[:5])
+    tool_res = json.dumps(all_houses[:5], ensure_ascii=False)
     
     return tool_res
 
@@ -228,7 +228,7 @@ async def get_houses_by_platform(
     scored_houses.sort(key=lambda x: x[0], reverse=True)
     ret_houses = [house for _, house in scored_houses[:5]]
 
-    tool_res = json.dumps(ret_houses)
+    tool_res = json.dumps(ret_houses, ensure_ascii=False)
     return tool_res
 
 with open("tags.json", "r") as f:
@@ -295,7 +295,7 @@ async def get_houses_nearby(
     scored_houses.sort(key=lambda x: x[0], reverse=True)
     ret_houses = [house for _, house in scored_houses[:5]]
 
-    tool_res = json.dumps(ret_houses)
+    tool_res = json.dumps(ret_houses, ensure_ascii=False)
     return tool_res
 
 get_houses_nearby.__doc__ = """以地标为圆心查询附近可租房源，返回直线距离、步行距离、步行时间。
