@@ -25,7 +25,7 @@ def _normalize_eval_id(eval_id: str | None) -> str | None:
     match = re.match(r"EV-(\d+)$", eval_id.strip(), flags=re.IGNORECASE)
     if not match:
         return None
-    return f"EV-{int(match.group(1)):02d}"
+    return f"EV-{int(match.group(1)):03d}"
 
 
 def _read_target_eval_cases() -> set[str] | None:
