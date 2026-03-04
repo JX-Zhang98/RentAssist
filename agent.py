@@ -22,12 +22,10 @@ from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, AnyMessage, RemoveMessage
 from langchain_core.outputs import LLMResult
 from langchain_openai import ChatOpenAI
-from langchain.agents.middleware.types import AgentMiddleware
 from langchain_mcp_adapters.client import MultiServerMCPClient
-from langchain.agents import create_agent
+from langgraph.graph import StateGraph, MessagesState, END
+from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.graph.message import REMOVE_ALL_MESSAGES
-from langgraph.runtime import Runtime
 
 from typedef import ToolResult
 
@@ -236,20 +234,12 @@ def compose_prompt_messages(messages: list[AnyMessage], session_id: str) -> list
     return prompt_messages
 
 
-class HistoryComposeMiddleware(AgentMiddleware):
+class HistoryComposeMiddleware:
     """在模型调用前执行历史消息组合 Hook 链。"""
 
     def __init__(self, session_id: str, hooks: dict[str, HistoryComposeHook]):
         self._session_id = session_id
         self._hooks = hooks
-
-    def before_model(self, state: dict[str, Any], runtime: Runtime[Any] | None) -> dict[str, Any] | None:
-        return self._apply_hooks(state)
-
-    async def abefore_model(
-        self, state: dict[str, Any], runtime: Runtime[Any] | None
-    ) -> dict[str, Any] | None:
-        return self._apply_hooks(state)
 
     def _apply_hooks(self, state: dict[str, Any]) -> dict[str, Any] | None:
         if not self._hooks:
@@ -292,6 +282,179 @@ class HistoryComposeMiddleware(AgentMiddleware):
             return None
 
         return {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *current_messages]}
+
+
+# ==================== 工具结果本地摘要 ====================
+
+_HOUSE_SEARCH_TOOLS = {
+    "get_houses_by_platform", "get_houses_nearby", "get_houses_by_community",
+}
+_HOUSE_DETAIL_TOOLS = {"get_house_by_id", "get_house_listings"}
+_OPERATION_TOOLS = {"rent_house", "terminate_rental", "take_offline"}
+_LANDMARK_TOOLS = {
+    "get_landmarks", "get_landmark_by_name", "search_landmarks", "get_landmark_by_id",
+}
+
+
+def _format_house_item(house: dict) -> str:
+    """格式化单条房源为简洁摘要行"""
+    parts = []
+    hid = house.get("house_id", "")
+    if hid:
+        parts.append(f"房源ID: {hid}")
+
+    price = house.get("price") or house.get("rent_price") or house.get("monthly_rent")
+    if price:
+        parts.append(f"月租: {price}元")
+
+    district = house.get("district", "")
+    area = house.get("area") or house.get("business_area", "")
+    community = house.get("community") or house.get("community_name", "")
+    location = "/".join(p for p in [district, area, community] if p)
+    if location:
+        parts.append(f"位置: {location}")
+
+    layout = house.get("layout") or house.get("house_type", "")
+    if layout:
+        parts.append(f"户型: {layout}")
+    else:
+        bedrooms = house.get("bedrooms") or house.get("bedroom_count")
+        if bedrooms:
+            parts.append(f"卧室: {bedrooms}室")
+
+    house_area = house.get("area_size") or house.get("size") or house.get("house_area")
+    if house_area:
+        parts.append(f"面积: {house_area}㎡")
+
+    orientation = house.get("orientation", "")
+    if orientation:
+        parts.append(f"朝向: {orientation}")
+
+    subway_dist = house.get("subway_distance") or house.get("distance_to_subway")
+    if subway_dist:
+        parts.append(f"地铁距离: {subway_dist}m")
+
+    decoration = house.get("decoration", "")
+    if decoration:
+        parts.append(f"装修: {decoration}")
+
+    rental_type = house.get("rental_type", "")
+    if rental_type:
+        parts.append(f"类型: {rental_type}")
+
+    distance = house.get("distance") or house.get("straight_distance")
+    if distance:
+        parts.append(f"直线距离: {distance}m")
+
+    walk_time = house.get("walk_time") or house.get("walking_time")
+    if walk_time:
+        parts.append(f"步行: {walk_time}分钟")
+
+    return " | ".join(parts)
+
+
+def _summarize_tool_result(tool_name: str, result_str: str) -> str:
+    """根据工具类型，对原始 JSON 结果进行本地摘要格式化"""
+    try:
+        data = json.loads(result_str)
+    except (json.JSONDecodeError, TypeError):
+        return result_str[:1000]
+
+    # --- 房源搜索类 ---
+    if tool_name in _HOUSE_SEARCH_TOOLS:
+        inner = data.get("data", data) if isinstance(data, dict) else data
+        items = []
+        total = 0
+        if isinstance(inner, dict):
+            items = inner.get("items") or inner.get("houses") or inner.get("results", [])
+            total = inner.get("total", len(items) if isinstance(items, list) else 0)
+        elif isinstance(inner, list):
+            items = inner
+            total = len(inner)
+
+        if not items:
+            return "未找到符合条件的房源。"
+
+        display = items[:5]
+        lines = [f"共找到 {total} 套房源，展示前 {len(display)} 套："]
+        for i, h in enumerate(display, 1):
+            if isinstance(h, dict):
+                lines.append(f"  {i}. {_format_house_item(h)}")
+            else:
+                lines.append(f"  {i}. {str(h)[:200]}")
+        if total > 5:
+            lines.append(f"  ...还有 {total - 5} 套，可进一步筛选。")
+        return "\n".join(lines)
+
+    # --- 房源详情 ---
+    if tool_name in _HOUSE_DETAIL_TOOLS:
+        inner = data.get("data", data) if isinstance(data, dict) else data
+        if isinstance(inner, dict):
+            return _format_house_item(inner)
+        if isinstance(inner, list):
+            lines = []
+            for h in inner[:5]:
+                if isinstance(h, dict):
+                    lines.append(_format_house_item(h))
+            return "\n".join(lines) if lines else str(inner)[:1000]
+        return str(inner)[:1000]
+
+    # --- 操作类（租房/退租/下架）---
+    if tool_name in _OPERATION_TOOLS:
+        op_names = {"rent_house": "租房", "terminate_rental": "退租", "take_offline": "下架"}
+        op = op_names.get(tool_name, "操作")
+        if isinstance(data, dict):
+            code = data.get("code") or data.get("status_code")
+            msg = data.get("message") or data.get("msg", "")
+            if code and int(code) == 200:
+                return f"{op}操作成功。{msg}"
+            elif msg:
+                return f"{op}操作结果：{msg}"
+        return f"{op}操作返回：{result_str[:500]}"
+
+    # --- 地标查询 ---
+    if tool_name in _LANDMARK_TOOLS:
+        inner = data.get("data", data) if isinstance(data, dict) else data
+        if isinstance(inner, dict):
+            name = inner.get("name", "")
+            lid = inner.get("id", "")
+            cat = inner.get("category", "")
+            dist = inner.get("district", "")
+            parts = [p for p in [f"ID:{lid}", f"名称:{name}", f"类别:{cat}", f"区域:{dist}"] if not p.endswith(":")]
+            return " | ".join(parts) if parts else json.dumps(inner, ensure_ascii=False)[:500]
+        if isinstance(inner, list):
+            lines = [f"共 {len(inner)} 个地标："]
+            for item in inner[:10]:
+                if isinstance(item, dict):
+                    n = item.get("name", "")
+                    i = item.get("id", "")
+                    lines.append(f"  - {i} {n}")
+            if len(inner) > 10:
+                lines.append(f"  ...还有 {len(inner) - 10} 个")
+            return "\n".join(lines)
+        return str(inner)[:1000]
+
+    # --- 周边配套 ---
+    if tool_name == "get_nearby_landmarks":
+        inner = data.get("data", data) if isinstance(data, dict) else data
+        if isinstance(inner, list):
+            if not inner:
+                return "附近未找到相关配套设施。"
+            lines = [f"附近共 {len(inner)} 个配套设施："]
+            for item in inner[:10]:
+                if isinstance(item, dict):
+                    name = item.get("name", "")
+                    d = item.get("distance") or item.get("distance_m", "")
+                    lines.append(f"  - {name} (距离 {d}m)" if d else f"  - {name}")
+            return "\n".join(lines)
+
+    # --- 统计类 ---
+    if tool_name in {"get_house_stats", "get_landmark_stats"}:
+        inner = data.get("data", data) if isinstance(data, dict) else data
+        return json.dumps(inner, ensure_ascii=False, indent=2)[:2000]
+
+    # 默认
+    return json.dumps(data, ensure_ascii=False)[:1000]
 
 
 class RentAssistAgent:
@@ -344,7 +507,11 @@ class RentAssistAgent:
         self._base_url = self._build_base_url(model_ip)
 
     def _build_agent(self, session_id: str):
-        """每次请求时构建带 Session-ID 头的 Agent，根据用例记录动态加载工具"""
+        """每次请求时构建带 Session-ID 头的 Agent（单次 LLM 调用模式）。
+
+        与 create_react_agent 的唯一区别：tools 节点执行完后直接 END，
+        不再把工具结果喂回模型，从而将 LLM 调用次数压缩为 1 次。
+        """
         llm = ChatOpenAI(
             base_url=self._base_url,
             api_key=_config.get("api_key", "EMPTY"),
@@ -366,13 +533,64 @@ class RentAssistAgent:
                     "tool_names": [t.name for t in tools],
                 }, ensure_ascii=False))
 
-        return create_agent(
-            model=llm,
-            tools=tools,
-            middleware=[HistoryComposeMiddleware(session_id=session_id, hooks=self._history_hooks)],
-            checkpointer=self._checkpointer,
-            system_prompt=SYSTEM_PROMPT,
-        )
+        model_with_tools = llm.bind_tools(tools)
+        tool_node = ToolNode(tools)
+
+        # --- 中间件：在调用模型前裁剪历史消息 ---
+        middleware = HistoryComposeMiddleware(session_id=session_id, hooks=self._history_hooks)
+
+        def call_model(state: MessagesState):
+            # 应用历史裁剪 hook
+            patched = middleware._apply_hooks(state)
+            if patched:
+                # _apply_hooks 返回 [RemoveMessage(...), ...actual messages...]
+                # 过滤掉 RemoveMessage，只保留实际消息
+                messages = [m for m in patched["messages"] if not isinstance(m, RemoveMessage)]
+            else:
+                messages = state["messages"]
+            # 注入 system prompt
+            from langchain_core.messages import SystemMessage
+            prompt_messages = [SystemMessage(content=SYSTEM_PROMPT)] + list(messages)
+            return {"messages": [model_with_tools.invoke(prompt_messages)]}
+
+        def after_agent(state: MessagesState):
+            """模型输出后路由：有 tool_calls → tools 节点；否则 → 结束"""
+            last = state["messages"][-1]
+            return "tools" if last.tool_calls else END
+
+        def format_results(state: MessagesState):
+            """本地处理工具结果：提取关键信息，生成用户友好的回复。
+
+            从 ToolMessage 中提取数据，格式化后作为一条新的 AIMessage 追加到 state，
+            这样 _extract_response 中用原有逻辑（找最后一条无 tool_calls 的 AIMessage）就能取到。
+            """
+            tool_messages = [m for m in state["messages"] if isinstance(m, ToolMessage)]
+            if not tool_messages:
+                return {"messages": []}
+
+            parts = []
+            for tm in tool_messages:
+                tool_name = tm.name or "unknown"
+                raw = tm.content if isinstance(tm.content, str) else json.dumps(tm.content, ensure_ascii=False)
+                parts.append(_summarize_tool_result(tool_name, raw))
+
+            summary_text = "\n\n".join(parts)
+            return {"messages": [AIMessage(content=summary_text)]}
+
+        def after_tools(state: MessagesState):
+            """工具执行完后进入 format 节点做本地结果处理"""
+            return "format"
+
+        graph = StateGraph(MessagesState)
+        graph.add_node("agent", call_model)
+        graph.add_node("tools", tool_node)
+        graph.add_node("format", format_results)
+        graph.set_entry_point("agent")
+        graph.add_conditional_edges("agent", after_agent)
+        graph.add_conditional_edges("tools", after_tools)
+        graph.add_edge("format", END)
+
+        return graph.compile(checkpointer=self._checkpointer)
 
     async def chat(self, *, model_ip: str, session_id: str, message: str) -> dict:
         """
@@ -436,15 +654,13 @@ class RentAssistAgent:
     def _extract_response(messages: list) -> dict:
         """从 Agent 输出的消息列表中提取最终回复、房源ID和工具调用结果
 
-        - 无房源时 response 为纯文本
-        - 有房源时 response 为 JSON 字符串: {"message":"...", "houses":["ID1","ID2"]}
+        单次 LLM 调用模式下：
+        - 闲聊时最后一条是 AIMessage（无 tool_calls），用其 content 作为回复
+        - 工具调用时最后一条是 ToolMessage，需从工具结果中本地提取/格式化
         """
-        response_text = ""
-        for msg in reversed(messages):
-            if isinstance(msg, AIMessage) and msg.content and not msg.tool_calls:
-                response_text = msg.content
-                break
+        _HOUSE_ID_RE = re.compile(r"HF_\d+")
 
+        # --- 收集工具结果 ---
         tool_results: List[ToolResult] = []
         houses = []
 
@@ -466,14 +682,37 @@ class RentAssistAgent:
                     result=result_str[:2000] if len(result_str) > 2000 else result_str,
                 ))
 
-        # 从 response_text 中提取 HF_1234 形式的房源ID
-        _HOUSE_ID_RE = re.compile(r"HF_\d+")
-        for hid in _HOUSE_ID_RE.findall(response_text):
-            houses.append(hid) if hid not in houses else None
+                # 从工具结果中提取房源ID
+                for hid in _HOUSE_ID_RE.findall(result_str):
+                    if hid not in houses:
+                        houses.append(hid)
+
+        # --- 提取 AI 文本回复 ---
+        response_text = ""
+        for msg in reversed(messages):
+            if isinstance(msg, AIMessage) and msg.content and not msg.tool_calls:
+                response_text = msg.content
+                break
+
+        # 如果没有纯文本 AI 回复（工具调用模式），从工具结果构建回复
+        if not response_text and tool_results:
+            parts = []
+            for tr in tool_results:
+                if tr.status == "success":
+                    # 尝试从工具结果中提取关键信息做简要摘要
+                    parts.append(_summarize_tool_result(tr.tool_name, tr.result))
+                else:
+                    parts.append(f"工具 {tr.tool_name} 调用失败")
+            response_text = "\n\n".join(parts)
+
+        # 从 AI 文本中也提取房源ID
+        if response_text:
+            for hid in _HOUSE_ID_RE.findall(response_text):
+                if hid not in houses:
+                    houses.append(hid)
 
         final_text = response_text or "抱歉，我暂时无法回答这个问题。"
 
-        # 强制使用json序列化response
         response = json.dumps(
             {"message": final_text, "houses": list(houses)},
             ensure_ascii=False,
