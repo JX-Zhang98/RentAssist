@@ -156,21 +156,17 @@ SYSTEM_PROMPT = f"""你是一个专业的北京租房助手。
 - 执行租房、退租、下架操作
 
 ## 工作原则
-1. 当用户描述租房需求时，先理解需求，如果信息不足（如缺少区域、预算、户型偏好等关键信息），先根据用户抱怨或现有意图进行模糊搜索，同时追问澄清
-2. 需求明确后，调用合适的工具搜索房源，将结果以友好的方式呈现给用户
-3. 如果用户只是闲聊，正常友好回复即可，不需要调用工具
-4. 推荐房源时，给出房源ID、价格、位置、户型等关键信息的简洁摘要，有多个候选时，给出匹配度最高的5个
-5. 近地铁：地铁距离 800 米以内；地铁可达：1000 米以内
+1. 如果用户只是闲聊，正常友好回复即可，不需要调用工具
+2. 当用户描述租房需求时，先根据用户的诉求或抱怨提取需求，调用合适的工具搜索房源
+3. 近地铁：地铁距离 800 米以内；地铁可达：1000 米以内
+4. 用户预期价格(含xx元左右)为可接受的最高价格
+5. 用户的偏好(如最好xx)为强制检索要求
 6. 如果用户确认要租某套房，必须调用 rent_house 工具完成操作
 7. 如果用户要退租或下架，必须调用对应的 terminate_rental 或 take_offline 工具
 
 ## 注意事项
 - 默认使用安居客平台，除非用户指定其他平台
 - 用户有最近、最低等要求时，调用工具也要设置合适的排序参数
-- 搜索结果为空时，放宽条件重新搜索，并按最符合度高进行排序
-- 回答中所有和房源信息相关的内容，**一定要带上每个房源对应的house_id**
-- 回答中所有和房源信息相关的内容，**一定要带上每个房源对应的house_id**
-- 回答中所有和房源信息相关的内容，**一定要带上每个房源对应的house_id**
 """
 
 
@@ -363,6 +359,7 @@ def _summarize_tool_result(tool_name: str, result_str: str) -> str:
 
     # --- 房源搜索类 ---
     if tool_name in _HOUSE_SEARCH_TOOLS:
+
         inner = data.get("data", data) if isinstance(data, dict) else data
         items = []
         total = 0
@@ -559,28 +556,54 @@ class RentAssistAgent:
             last = state["messages"][-1]
             return "tools" if last.tool_calls else END
 
+        def after_tools(state: MessagesState):
+            """工具执行完后进入 format 节点做本地结果处理"""
+            last = state["messages"][-1]
+            if last.name in _LANDMARK_TOOLS:
+                return "agent"
+            else:
+                return "format"
+        
+
         def format_results(state: MessagesState):
             """本地处理工具结果：提取关键信息，生成用户友好的回复。
 
-            从 ToolMessage 中提取数据，格式化后作为一条新的 AIMessage 追加到 state，
-            这样 _extract_response 中用原有逻辑（找最后一条无 tool_calls 的 AIMessage）就能取到。
+            只处理当前轮次的 ToolMessage（最后一条带 tool_calls 的 AIMessage 之后的），
+            格式化后作为一条新的 AIMessage 追加到 state。
             """
-            tool_messages = [m for m in state["messages"] if isinstance(m, ToolMessage)]
+            messages = state["messages"]
+
+            # 找到最后一条带 tool_calls 的 AIMessage 的位置
+            last_ai_idx = -1
+            for i in range(len(messages) - 1, -1, -1):
+                if isinstance(messages[i], AIMessage) and messages[i].tool_calls:
+                    last_ai_idx = i
+                    break
+
+            if last_ai_idx < 0:
+                return {"messages": []}
+
+            # 只取这条 AIMessage 之后的 ToolMessage
+            tool_messages = [
+                m for m in messages[last_ai_idx + 1:]
+                if isinstance(m, ToolMessage)
+            ]
             if not tool_messages:
                 return {"messages": []}
 
             parts = []
             for tm in tool_messages:
                 tool_name = tm.name or "unknown"
-                raw = tm.content if isinstance(tm.content, str) else json.dumps(tm.content, ensure_ascii=False)
-                parts.append(_summarize_tool_result(tool_name, raw))
+                houses_str = tm.content[0]["text"]
+                houses_info = json.loads(houses_str)
+                for hi in houses_info:
+                    parts.append({
+                        "id": hi["house_id"],
+                        "price": hi["price"],
+                    })
 
-            summary_text = "\n\n".join(parts)
+            summary_text = "找到如下房源：" + "\n".join(str(parts))
             return {"messages": [AIMessage(content=summary_text)]}
-
-        def after_tools(state: MessagesState):
-            """工具执行完后进入 format 节点做本地结果处理"""
-            return "format"
 
         graph = StateGraph(MessagesState)
         graph.add_node("agent", call_model)
@@ -661,12 +684,23 @@ class RentAssistAgent:
         """
         _HOUSE_ID_RE = re.compile(r"HF_\d+")
 
-        # --- 1. 收集 ToolMessage → tool_results 元数据（给 ChatResponse.tool_results 用）---
+        # --- 1. 只收集当前轮次的 ToolMessage → tool_results 元数据 ---
         tool_results: List[ToolResult] = []
         houses = []
 
-        for msg in messages:
-            if isinstance(msg, ToolMessage):
+        # 找最后一条带 tool_calls 的 AIMessage 位置
+        last_ai_idx = -1
+        for i in range(len(messages) - 1, -1, -1):
+            if isinstance(messages[i], AIMessage) and messages[i].tool_calls:
+                last_ai_idx = i
+                break
+
+        current_tool_msgs = (
+            [m for m in messages[last_ai_idx + 1:] if isinstance(m, ToolMessage)]
+            if last_ai_idx >= 0 else []
+        )
+
+        for msg in current_tool_msgs:
                 tool_name = msg.name or "unknown"
                 try:
                     data = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
