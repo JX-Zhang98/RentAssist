@@ -627,6 +627,7 @@ class RentAssistAgent:
 
         self._ensure_base_url(model_ip)
 
+        tools = self._tools
         eval_id = _extract_eval_id(session_id)
         if eval_id:
             eval_tools_map = _load_eval_tools()
