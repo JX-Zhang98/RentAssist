@@ -151,7 +151,7 @@ SYSTEM_PROMPT = f"""你是一个专业的北京租房助手。
 
 ## 你的能力
 - 帮助用户搜索北京地区的租房信息，包括按区域、价格、户型、地铁距离、通勤时间等多维度筛选
-- 查询地标信息（地铁站、公司、商圈(如国贸)）
+- 查询地标信息（地铁站、公司、商圈）
 - 查询小区周边配套（商超、公园）
 - 执行租房、退租、下架操作
 
@@ -160,7 +160,7 @@ SYSTEM_PROMPT = f"""你是一个专业的北京租房助手。
 2. 当用户描述租房需求时，先根据用户的诉求或抱怨提取需求，调用合适的工具搜索房源
 3. 近地铁：地铁距离 800 米以内；地铁可达：1000 米以内
 4. 用户预期价格(含xx元左右)为可接受的最高价格
-5. 用户的偏好(如最好xx)为强制检索要求
+5. 用户的偏好(如最好xx,可接受xx)纳入检索要求
 6. 如果用户确认要租某套房，必须调用 rent_house 工具完成操作
 7. 如果用户要退租或下架，必须调用对应的 terminate_rental 或 take_offline 工具
 
@@ -600,14 +600,14 @@ class RentAssistAgent:
                     parts.append(tm.content[0]['text'])
                 elif tool_name in _HOUSE_SEARCH_TOOLS:
                     houses_str = tm.content[0]["text"]
-                    houses_info = json.loads(houses_str)
-                    for hi in houses_info['data']['items']:
+                    houses = json.loads(houses_str)
+                    for hi in houses:
                         parts.append(str({
                             "id": hi["house_id"],
                             "price": hi["price"],
                         }))
 
-            summary_text = "找到如下房源：" + "\n".join(parts)
+            summary_text = "\n".join(parts)
             return {"messages": [AIMessage(content=summary_text)]}
 
         graph = StateGraph(MessagesState)
