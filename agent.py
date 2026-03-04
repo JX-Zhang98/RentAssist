@@ -200,8 +200,23 @@ def compose_prompt_messages(messages: list[AnyMessage], session_id: str) -> list
         return False
 
     last = prompt_messages[-1]
+    new_messages = []
     if isinstance(last, HumanMessage):
-        return [m for m in prompt_messages if _is_dialogue_layer(m)]
+        dialogue = [m for m in prompt_messages if _is_dialogue_layer(m)]
+        for m in dialogue:
+            if isinstance(m, HumanMessage):
+                new_messages.append(m)
+            elif isinstance(m, AIMessage):
+                msg_content = m.content
+                # 从 msg_content 中提取 HF_1234 形式的房源ID
+                houses = []
+                _HOUSE_ID_RE = re.compile(r"HF_\d+")
+                for hid in _HOUSE_ID_RE.findall(msg_content):
+                    houses.append(hid) if hid not in houses else None
+                
+                m.content = "合适的房源包括：" + str(houses)
+                new_messages.append(m)
+        return new_messages
 
     if isinstance(last, ToolMessage):
         last_human_idx = -1
