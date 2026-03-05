@@ -525,6 +525,10 @@ class RentAssistAgent:
             base_url=self._base_url,
             api_key=_config.get("api_key", "EMPTY"),
             model=_config.get("model_name", "Qwen/Qwen3-32B"),
+            temperature=0,
+            extra_body={
+                "chat_template_kwargs": {"enable_thinking":False}
+            },
             default_headers={"Session-ID": session_id},
         )
 
