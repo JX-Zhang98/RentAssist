@@ -76,6 +76,7 @@ class AgentTraceCallback(BaseCallbackHandler):
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
         self.total_tokens = 0
+        self.used_tool_names: set[str] = set()
 
     def _log(self, event: str, data: dict):
         record = {"session_id": self.session_id, "event": event, "ts": time.time(), **data}
@@ -129,7 +130,10 @@ class AgentTraceCallback(BaseCallbackHandler):
         })
 
     def on_tool_start(self, serialized: dict, input_str: str, **kwargs):
-        self._log("tool_start", {"tool": serialized.get("name", ""), "input": input_str[:1000]})
+        tool_name = serialized.get("name", "")
+        if tool_name:
+            self.used_tool_names.add(tool_name)
+        self._log("tool_start", {"tool": tool_name, "input": input_str[:1000]})
 
     def on_tool_end(self, output: str, **kwargs):
         self._log("tool_end", {"output": str(output)[:2000]})
@@ -663,10 +667,13 @@ class RentAssistAgent:
             "total_tokens": callback.total_tokens,
         })
 
-        # 记录本次用例使用的工具，供下次动态加载
+        # 记录本会话中用例使用过的工具（遍历全部 ToolMessage），供下次动态加载
         eval_id = _extract_eval_id(session_id)
         if eval_id:
-            used_tools = {tr.tool_name for tr in response["tool_results"]}
+            # 双通道收集：
+            # 1) callback 实时记录当前请求的工具调用；
+            # 2) messages 扫描补齐历史 ToolMessage。
+            used_tools = set(callback.used_tool_names) | self._collect_used_tool_names(messages)
             if used_tools:
                 eval_tools_map = _load_eval_tools()
                 existing = set(eval_tools_map.get(eval_id, []))
@@ -686,6 +693,15 @@ class RentAssistAgent:
             self._mcp_client = None
             self._tools = None
             self._base_url = None
+
+    @staticmethod
+    def _collect_used_tool_names(messages: list[AnyMessage]) -> set[str]:
+        """从会话消息中收集所有已调用工具名（不区分轮次）。"""
+        used_tools: set[str] = set()
+        for msg in messages:
+            if isinstance(msg, ToolMessage) and msg.name:
+                used_tools.add(msg.name)
+        return used_tools
 
     @staticmethod
     def _extract_response(messages: list) -> dict:
