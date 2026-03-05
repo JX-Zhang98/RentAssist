@@ -646,18 +646,21 @@ class RentAssistAgent:
 
         self._ensure_base_url(model_ip)
 
-        tools = self._tools
-        eval_id = _extract_eval_id(session_id)
-        if eval_id:
-            eval_tools_map = _load_eval_tools()
-            if eval_id in eval_tools_map:
-                known_names = set(eval_tools_map[eval_id])
-                tools = [t for t in self._tools if t.name in known_names]
-                _agent_logger.debug(json.dumps({
-                    "event": "dynamic_tools", "eval_id": eval_id,
-                    "all_tools": len(self._tools), "loaded_tools": len(tools),
-                    "tool_names": [t.name for t in tools],
-                }, ensure_ascii=False))
+        use_tool_cache = bool(_config.get("use_tool_cache", False))
+        tools, select_mode, eval_id = self._select_tools_for_session(
+            all_tools=self._tools,
+            session_id=session_id,
+            use_tool_cache=use_tool_cache,
+        )
+        _agent_logger.debug(json.dumps({
+            "event": "dynamic_tools",
+            "eval_id": eval_id,
+            "use_tool_cache": use_tool_cache,
+            "mode": select_mode,
+            "all_tools": len(self._tools),
+            "loaded_tools": len(tools),
+            "tool_names": [t.name for t in tools],
+        }, ensure_ascii=False))
 
         agent = self._build_agent(session_id, tools)
 
@@ -682,9 +685,8 @@ class RentAssistAgent:
             "total_tokens": callback.total_tokens,
         })
 
-        # 记录本会话中用例使用过的工具（遍历全部 ToolMessage），供下次动态加载
-        eval_id = _extract_eval_id(session_id)
-        if eval_id:
+        # 仅在预热模式(use_tool_cache=false)下记录工具；缓存模式不学习新工具
+        if eval_id and not use_tool_cache:
             # 双通道收集：
             # 1) callback 实时记录当前请求的工具调用；
             # 2) messages 扫描补齐历史 ToolMessage。
@@ -699,6 +701,11 @@ class RentAssistAgent:
                     callback._log("eval_tools_updated", {
                         "eval_id": eval_id, "tools": sorted(merged),
                     })
+        elif eval_id and use_tool_cache:
+            callback._log("eval_tools_skip_update", {
+                "eval_id": eval_id,
+                "reason": "use_tool_cache=true",
+            })
 
         return response
 
@@ -717,6 +724,33 @@ class RentAssistAgent:
             if isinstance(msg, ToolMessage) and msg.name:
                 used_tools.add(msg.name)
         return used_tools
+
+    @staticmethod
+    def _select_tools_for_session(
+        *,
+        all_tools: list[Any],
+        session_id: str,
+        use_tool_cache: bool,
+        eval_tools_map: dict | None = None,
+    ) -> tuple[list[Any], str, str | None]:
+        """按配置和用例缓存选择可用工具集合。"""
+        eval_id = _extract_eval_id(session_id)
+        if not use_tool_cache:
+            return list(all_tools), "cache_disabled_full_tools", eval_id
+
+        if not eval_id:
+            return list(all_tools), "no_eval_id_full_tools", None
+
+        tools_map = eval_tools_map if eval_tools_map is not None else _load_eval_tools()
+        known_names = set(tools_map.get(eval_id, []))
+        if not known_names:
+            return list(all_tools), "cache_miss_full_tools", eval_id
+
+        filtered_tools = [t for t in all_tools if t.name in known_names]
+        if not filtered_tools:
+            return list(all_tools), "cache_stale_full_tools", eval_id
+
+        return filtered_tools, "cache_hit_filtered_tools", eval_id
 
     @staticmethod
     def _extract_response(messages: list) -> dict:
