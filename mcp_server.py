@@ -102,7 +102,7 @@ async def get_landmark_by_name(name: str) -> str:
     landmark['type'] = landmark['details']['type']
     landmark['lines'] = landmark['details']['lines']
     del landmark['details']
-    return json.dumps(tool_res, ensure_ascii=False)
+    return json.dumps(landmark, ensure_ascii=False)
 
 
 @mcp.tool()

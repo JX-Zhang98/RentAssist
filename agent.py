@@ -208,20 +208,31 @@ def compose_prompt_messages(messages: list[AnyMessage], session_id: str) -> list
     last = prompt_messages[-1]
     new_messages = []
     if isinstance(last, HumanMessage):
-        dialogue = [m for m in prompt_messages if _is_dialogue_layer(m)]
-        for m in dialogue:
-            if isinstance(m, HumanMessage):
-                new_messages.append(m)
-            elif isinstance(m, AIMessage):
-                msg_content = m.content
-                # 从 msg_content 中提取 HF_1234 形式的房源ID
-                houses = []
-                _HOUSE_ID_RE = re.compile(r"HF_\d+")
-                for hid in _HOUSE_ID_RE.findall(msg_content):
-                    houses.append(hid) if hid not in houses else None
-                
-                m.content = "合适的房源包括：" + str(houses)
-                new_messages.append(m)
+        for msg in prompt_messages:
+            if _is_dialogue_layer(msg):
+                if isinstance(msg, HumanMessage):
+                    new_messages.append(msg)
+                elif isinstance(msg, AIMessage):
+                    msg_content = msg.content
+                    # 从 msg_content 中提取 HF_1234 形式的房源ID
+                    houses = []
+                    _HOUSE_ID_RE = re.compile(r"HF_\d+")
+                    for hid in _HOUSE_ID_RE.findall(msg_content):
+                        houses.append(hid) if hid not in houses else None
+
+                    msg.content = "合适的房源包括：" + str(houses)
+                    new_messages.append(msg)
+            else:  # ToolMessage and aimessage with toolcall
+                if isinstance(msg, AIMessage) and msg.tool_calls:
+                    continue
+                else: # toolmessage
+                    if msg.name == "get_landmark_by_name":
+                        try:
+                            landmark_info = json.loads(msg.content[0]["text"])
+                            knowage_msg = AIMessage(content="已知地标{}ID为{}".format(landmark_info["name"], landmark_info['id']))
+                            new_messages.append(knowage_msg)
+                        except:
+                            pass
         return new_messages
 
     if isinstance(last, ToolMessage):
