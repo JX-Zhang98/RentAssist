@@ -238,21 +238,26 @@ async def get_houses_by_platform(
     tool_res = await _get("/api/houses/by_platform", params, user_id=DEFAULT_USER_ID)
  
     all_houses = json.loads(tool_res)["data"]["items"]
+    ret_houses = []
     required_tag_set = set(normal_tags or [])
-    forbidden_tag_set = set(negative_tags or [])
-    scored_houses: list[tuple[int, dict]] = []
 
-    for house in all_houses:
-        house_tags = set(house.get("tags") or [])
-        if forbidden_tag_set and forbidden_tag_set.intersection(house_tags):
-            continue
+    if sort_by:
+        ret_houses = all_houses[:5]
+    else:
+        forbidden_tag_set = set(negative_tags or [])
+        scored_houses: list[tuple[int, dict]] = []
 
-        overlap_count = len(required_tag_set.intersection(house_tags))
-        scored_houses.append((overlap_count, house))
+        for house in all_houses:
+            house_tags = set(house.get("tags") or [])
+            if forbidden_tag_set and forbidden_tag_set.intersection(house_tags):
+                continue
 
-    # Python sort is stable, so equal overlap_count keeps original all_houses order.
-    scored_houses.sort(key=lambda x: x[0], reverse=True)
-    ret_houses = [house for _, house in scored_houses[:5]]
+            overlap_count = len(required_tag_set.intersection(house_tags))
+            scored_houses.append((overlap_count, house))
+
+        # Python sort is stable, so equal overlap_count keeps original all_houses order.
+        scored_houses.sort(key=lambda x: x[0], reverse=True)
+        ret_houses = [house for _, house in scored_houses[:5]]
 
     tool_res = json.dumps(ret_houses, ensure_ascii=False)
     return tool_res
