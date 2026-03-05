@@ -561,7 +561,13 @@ class RentAssistAgent:
             # 注入 system prompt
             from langchain_core.messages import SystemMessage
             prompt_messages = [SystemMessage(content=SYSTEM_PROMPT)] + list(messages)
-            return {"messages": [model_with_tools.invoke(prompt_messages)]}
+            ai_message = self._invoke_model_with_retry(
+                model_with_tools=model_with_tools,
+                prompt_messages=prompt_messages,
+                session_id=session_id,
+                max_retries=3,
+            )
+            return {"messages": [ai_message]}
 
         def after_agent(state: MessagesState):
             """模型输出后路由：有 tool_calls → tools 节点；否则 → 结束"""
@@ -724,6 +730,41 @@ class RentAssistAgent:
             if isinstance(msg, ToolMessage) and msg.name:
                 used_tools.add(msg.name)
         return used_tools
+
+    @staticmethod
+    def _invoke_model_with_retry(
+        *,
+        model_with_tools: Any,
+        prompt_messages: list[AnyMessage],
+        session_id: str,
+        max_retries: int = 3,
+    ) -> Any:
+        """调用模型并在失败时重试，最多 max_retries 次。"""
+        attempts = max(1, min(int(max_retries), 3))
+        last_error: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                return model_with_tools.invoke(prompt_messages)
+            except Exception as exc:
+                last_error = exc
+                _agent_logger.warning(json.dumps({
+                    "event": "model_invoke_retry",
+                    "session_id": session_id,
+                    "attempt": attempt,
+                    "max_retries": attempts,
+                    "error": str(exc),
+                }, ensure_ascii=False))
+                if attempt < attempts:
+                    # 轻量指数退避，避免瞬时抖动导致连续失败。
+                    time.sleep(0.2 * (2 ** (attempt - 1)))
+
+        _agent_logger.error(json.dumps({
+            "event": "model_invoke_failed",
+            "session_id": session_id,
+            "attempts": attempts,
+            "error": str(last_error) if last_error else "unknown",
+        }, ensure_ascii=False))
+        return AIMessage(content=f"模型调用失败，已重试 {attempts} 次，请稍后重试。")
 
     @staticmethod
     def _select_tools_for_session(
