@@ -6,6 +6,7 @@
 import os
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 import httpx
 from mcp.server.fastmcp import FastMCP
@@ -26,23 +27,12 @@ _CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _cache_filename(path: str, params: dict | None, user_id: str | None) -> str:
-    """用路径和参数明文拼接缓存文件名"""
-    # /api/houses/by_platform -> houses_by_platform
-    name = path.strip("/").replace("/", "_").replace("api_", "")
-    parts = [name]
-    for k, v in sorted((params or {}).items()):
-        parts.append(f"{k}={v}")
-    filename = "__".join(parts)
-    # 去掉文件名中不安全的字符
-    filename = re.sub(r'[^\w=.,\-]', '_', filename)
-    return filename + ".json"
-
-
-def _cache_get(path: str, params: dict | None, user_id: str | None) -> str | None:
-    fp = _CACHE_DIR / _cache_filename(path, params, user_id)
-    if fp.exists():
-        return fp.read_text(encoding="utf-8")
-    return None
+    """缓存文件名格式：path-小时-分钟-秒.json"""
+    _ = params, user_id
+    path_name = path.strip("/").replace("/", "_").replace("api_", "")
+    path_name = re.sub(r"[^\w\-]", "_", path_name) or "root"
+    ts = datetime.now().strftime("%H-%M-%S")
+    return f"{path_name}-{ts}.json"
 
 
 def _cache_set(path: str, params: dict | None, user_id: str | None, value: str) -> None:
