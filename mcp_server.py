@@ -263,6 +263,7 @@ async def get_houses_nearby(
     landmark_id: str,
     max_distance: float | None = None,
     listing_platform: str | None = None,
+    max_price : int | None = None,
     normal_tags: list[str] | None = None,
     negative_tags: list[str] | None = None,
 ) -> str:
@@ -272,6 +273,7 @@ async def get_houses_nearby(
         landmark_id: 地标 ID 或地标名称
         max_distance: 最大直线距离（米），默认 2000
         listing_platform: 挂牌平台：链家/安居客/58同城，不传默认安居客
+        max_price: 最高月租金（元）
         normal_tags: 符合用户需求的tag列表
         negative_tags: 要求不带有的tag列表
     """
@@ -281,6 +283,7 @@ async def get_houses_nearby(
     )
     tool_res = await _get("/api/houses/nearby", params, user_id=DEFAULT_USER_ID)
     all_houses = json.loads(tool_res)["data"]["items"]
+
     required_tag_set = set(normal_tags or [])
     forbidden_tag_set = set(negative_tags or [])
     scored_houses: list[tuple[int, dict]] = []
@@ -289,7 +292,8 @@ async def get_houses_nearby(
         house_tags = set(house.get("tags") or [])
         if forbidden_tag_set and forbidden_tag_set.intersection(house_tags):
             continue
-
+        if max_price is not None and house.get("price") > max_price:
+            continue
         overlap_count = len(required_tag_set.intersection(house_tags))
         scored_houses.append((overlap_count, house))
 
