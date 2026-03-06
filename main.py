@@ -25,18 +25,25 @@ def _normalize_eval_id(eval_id: str | None) -> str | None:
     match = re.match(r"EV-(\d+)$", eval_id.strip(), flags=re.IGNORECASE)
     if not match:
         return None
-    return f"EV-{int(match.group(1)):02d}"
+    return f"EV-{int(match.group(1)):03d}"
 
 
-def _read_target_eval_case() -> str | None:
+def _read_target_eval_cases() -> set[str] | None:
     if not EVAL_TARGET_CASE_FILE.exists():
         return None
     try:
-        raw = EVAL_TARGET_CASE_FILE.read_text(encoding="utf-8").strip()
+        raw = EVAL_TARGET_CASE_FILE.read_text(encoding="utf-8")
     except Exception as e:
         print(f"[警告] 读取标记文件失败: {e}")
         return None
-    return _normalize_eval_id(raw)
+
+    cases: set[str] = set()
+    for line in raw.splitlines():
+        normalized = _normalize_eval_id(line.strip())
+        if normalized:
+            cases.add(normalized)
+
+    return cases
 
 
 @asynccontextmanager
@@ -55,11 +62,14 @@ async def chat(req: ChatRequest) -> ChatResponse:
     start = time.perf_counter()
     session_logger.log_request(req)
 
-    target_eval_case = _read_target_eval_case()
-    if target_eval_case is not None:
+    target_eval_cases = _read_target_eval_cases()
+    if target_eval_cases is not None:
         req_eval_case = _normalize_eval_id(_extract_eval_id(req.session_id))
-        if req_eval_case != target_eval_case:
-            print(f"[过滤] session_id={req.session_id}, 当前用例={req_eval_case}, 目标用例={target_eval_case}")
+        if req_eval_case not in target_eval_cases:
+            print(
+                f"[过滤] session_id={req.session_id}, 当前用例={req_eval_case}, "
+                f"目标用例列表={sorted(target_eval_cases)}"
+            )
             response = ChatResponse(
                 session_id=req.session_id,
                 response="{}",

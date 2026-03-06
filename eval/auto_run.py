@@ -18,7 +18,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--case-list",
         default="",
-        help="指定要执行的用例列表，逗号分隔，如 EV-01,EV-05,EV-60；设置后优先于 --case-start/--case-end",
+        help="指定要执行的用例列表，逗号分隔，如 EV-001,EV-05,EV-060；设置后优先于 --case-start/--case-end",
     )
     parser.add_argument("--case-start", type=int, default=1, help="起始用例编号(含)，如 1 表示 EV-01")
     parser.add_argument("--case-end", type=int, default=60, help="结束用例编号(含)，如 60 表示 EV-60")
@@ -39,7 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _format_case_name(case_no: int) -> str:
-    return f"EV-{case_no:02d}"
+    return f"EV-{case_no:03d}"
 
 
 def _normalize_case_token(token: str) -> str:
